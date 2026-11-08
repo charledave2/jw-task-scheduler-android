@@ -13,9 +13,17 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = 37
-        versionName = "1.0.36"\n        manifestPlaceholders["appLabel"] = "JW Task Scheduler"
+        versionName = "1.0.36"
+        manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
-    buildTypes {\n        debug {\n            applicationIdSuffix = ".test"\n            versionNameSuffix = "-test"\n            manifestPlaceholders["appLabel"] = "JW Task Scheduler Test"\n        }\n    }\n    buildFeatures {
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            manifestPlaceholders["appLabel"] = "JW Task Scheduler Test"
+        }
+    }
+    buildFeatures {
         compose = true
         buildConfig = true
     }
