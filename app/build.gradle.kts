@@ -16,13 +16,6 @@ android {
         versionName = "1.0.36"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
-    buildTypes {
-        debug {
-            applicationIdSuffix = ".test"
-            versionNameSuffix = "-test"
-            manifestPlaceholders["appLabel"] = "JW Task Scheduler Test"
-        }
-    }
     buildFeatures {
         compose = true
         buildConfig = true
