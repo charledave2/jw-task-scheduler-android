@@ -1,6 +1,9 @@
 # Changelog
 
 ## 1.0.41
+- Moved the month controls into the calendar card to use the empty space more efficiently.
+
+## 1.0.41
 - Fixed export preview sizing on short portrait and landscape screens.
 - Restored vertical scrolling while keeping pinch-to-zoom enabled.
 
