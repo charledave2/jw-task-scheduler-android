@@ -739,6 +739,13 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     }
     var modalDate by remember(month) { mutableStateOf<LocalDate?>(null) }
     val scope = rememberCoroutineScope()
+    val darkMode = store.dark.value
+    fun dayPalette(day: Int): Pair<Color, Color> = when (day) {
+        4 -> if (darkMode) Color(0xFF80C8B5) to Color(0xFF29463E) else Color(0xFF28685D) to Color(0xFFE2F0EC) // Thursday · teal
+        6 -> if (darkMode) Color(0xFFE0B56A) to Color(0xFF4A3C25) else Color(0xFF8A6425) to Color(0xFFF7ECD7) // Saturday · amber
+        7 -> if (darkMode) Color(0xFF9AB9D8) to Color(0xFF2C3D50) else Color(0xFF496887) to Color(0xFFE7EEF7) // Sunday · blue
+        else -> MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.secondaryContainer
+    }
     val firstDate = remember(month) { month.atDay(1) }
     val calendarCells = remember(month) {
         buildList<LocalDate?> {
@@ -784,6 +791,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                             } else {
                                 val hasMeeting = !meetingsByDate[date].isNullOrEmpty()
                                 val selected = selectedDate == date
+                                val (dayAccent, dayContainer) = dayPalette(date.dayOfWeek.value)
                                 Column(
                                     Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp))
                                         .clickable {
@@ -793,10 +801,10 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
                                 ) {
-                                    Box(Modifier.size(30.dp).clip(CircleShape).background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent), contentAlignment = Alignment.Center) {
-                                        Text(date.dayOfMonth.toString(), fontSize = 12.sp, fontWeight = if (selected || hasMeeting) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                                    Box(Modifier.size(30.dp).clip(CircleShape).background(when { selected && hasMeeting -> dayAccent; selected -> MaterialTheme.colorScheme.primary; hasMeeting -> dayContainer; else -> Color.Transparent }), contentAlignment = Alignment.Center) {
+                                        Text(date.dayOfMonth.toString(), fontSize = 12.sp, fontWeight = if (selected || hasMeeting) FontWeight.SemiBold else FontWeight.Normal, color = when { selected && hasMeeting -> if (darkMode) MaterialTheme.colorScheme.onPrimary else Color.White; selected -> MaterialTheme.colorScheme.onPrimary; hasMeeting -> dayAccent; else -> MaterialTheme.colorScheme.onSurface })
                                     }
-                                    Box(Modifier.padding(top = 1.dp).size(5.dp).clip(CircleShape).background(if (hasMeeting) MaterialTheme.colorScheme.primary else Color.Transparent))
+                                    Box(Modifier.padding(top = 1.dp).size(5.dp).clip(CircleShape).background(if (hasMeeting) dayAccent else Color.Transparent))
                                 }
                             }
                         }
@@ -804,15 +812,21 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                 }
             }
         }
-        Row(Modifier.padding(start = 5.dp, top = 9.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
-            Text("  Meeting scheduled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 9.dp, bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf(4 to "Thu", 6 to "Sat", 7 to "Sun").forEach { (day, label) ->
+                val (accent, _) = dayPalette(day)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
+                    Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
         selectedDate?.let { date ->
             val selectedMeetings = meetingsByDate[date].orEmpty()
-            Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            val (selectedAccent, selectedContainer) = dayPalette(date.dayOfWeek.value)
+            Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = if (selectedMeetings.isNotEmpty()) selectedContainer else MaterialTheme.colorScheme.surfaceVariant), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+                    Icon(MaterialSymbol("calendar-days"), null, tint = if (selectedMeetings.isNotEmpty()) selectedAccent else MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
                         Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(if (selectedMeetings.isEmpty()) "No meeting scheduled" else selectedMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
