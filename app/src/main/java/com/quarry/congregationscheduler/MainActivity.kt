@@ -1662,7 +1662,7 @@ private fun ExportScreen(store: AppStore) {
                         .fillMaxWidth()
                         .heightIn(max = 300.dp)
                         .graphicsLayer(scaleX = zoom, scaleY = zoom)
-                        .transformable(transform, panEnabled = false),
+                        .transformable(transform, canPan = { false }),
                     contentScale = ContentScale.Fit
                 )
             }
