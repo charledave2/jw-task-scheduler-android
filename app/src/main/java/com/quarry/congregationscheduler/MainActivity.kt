@@ -1835,14 +1835,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                     OutlinedButton(onClick=onRestore, modifier=Modifier.weight(1f), shape=RoundedCornerShape(12.dp)) { Icon(MaterialSymbol("upload"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Restore") }
                 }
                 val backup = store.autoBackup.value
-                PreferenceRow(icon="cloud_done",title="Automatic backup",subtitle=when {
+                PreferenceRow(icon="download",title="Automatic backup",subtitle=when {
                     backup.folderName != null -> "${backup.folderName} · JW Task Scheduler Auto.bcdv"
                     else -> "Save a .bcdv copy to a folder you choose"
                 }) {
                     Switch(checked=backup.enabled,onCheckedChange=onAutoBackupToggle,colors=appSwitchColors())
                 }
                 OutlinedButton(onClick=onChooseAutoBackupFolder,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp)) {
-                    Icon(MaterialSymbol("folder-open"),null,Modifier.size(17.dp)); Spacer(Modifier.width(7.dp))
+                    Icon(MaterialSymbol("file-down"),null,Modifier.size(17.dp)); Spacer(Modifier.width(7.dp))
                     Text(if(backup.folderName==null) "Choose backup folder" else "Change backup folder")
                 }
                 backup.lastSaved?.let { Text("Last saved: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
