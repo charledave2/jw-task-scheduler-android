@@ -567,7 +567,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         Text("Here’s your congregation at a glance.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
         Spacer(Modifier.height(18.dp))
         if (next != null) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(19.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenCalendar(null) }) {
-            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingLabel(next.type)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
+            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingTitle(next)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
         } else EmptyCard("No upcoming meetings found.")
         val reviewable = data?.meetings.orEmpty().filter { it.date < today }.flatMap { meeting ->
             meeting.slots.filter { it.personId != null }.filter { slot -> store.taskReviews.value.none { it.date == meeting.date && it.type == meeting.type && it.department == slot.department && it.slotKey == slot.key.removePrefix("dept:") } }
@@ -584,13 +584,14 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         }
         TopPerformerCard(data?.people.orEmpty(), store.taskReviews.value, store.month.value, store)
         SectionTitle("Departments", "Directory") { onGo("People Directory") }
-        val departments = listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "platform")
+        val configuredDepartments = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.label to it.id }.orEmpty() else emptyList()
+        val departments = if (store.localMode) configuredDepartments else listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "attendant")
         departments.forEach { (name, dept) ->
-            val members = data?.people.orEmpty().filter { it.status == "active" && when (dept) { "mic" -> it.mic; "av" -> it.audio || it.video; else -> it.platform } }
-            RowCard(icon = when(dept) { "mic" -> "mic"; "av" -> "audio-lines"; else -> "podium" }, title = name, subtitle = "${members.size} active ${if (members.size == 1) "member" else "members"}", trailing = "View", onClick = { selectedDepartment = name to members })
+            val members = data?.people.orEmpty().filter { person -> person.status == "active" && when (dept) { "mic" -> person.mic; "av" -> person.audio || person.video; "attendant", "platform" -> person.platform; else -> dept in person.customDepartmentIds } }
+            RowCard(icon = when(dept) { "mic" -> "mic"; "av" -> "audio-lines"; "attendant", "platform" -> "podium"; else -> "groups" }, title = name, subtitle = "${members.size} active ${if (members.size == 1) "member" else "members"}", trailing = "View", onClick = { selectedDepartment = name to members })
         }
         SectionTitle("This Week", "Calendar") { onOpenCalendar(null) }
-        data?.meetings?.filter { it.date >= today }?.take(3)?.forEach { m -> RowCard("calendar-days", "${meetingLabel(m.type)} · ${friendlyDate(m.date)}", prettyTime(m.time), "→") { onOpenCalendar(runCatching { LocalDate.parse(m.date) }.getOrNull()) } }
+        data?.meetings?.filter { it.date >= today }?.take(3)?.forEach { m -> RowCard("calendar-days", "${meetingTitle(m)} · ${friendlyDate(m.date)}", prettyTime(m.time), "→") { onOpenCalendar(runCatching { LocalDate.parse(m.date) }.getOrNull()) } }
         Spacer(Modifier.height(18.dp))
     }
     selectedDepartment?.let { (name, members) ->
@@ -600,8 +601,10 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 
 @Composable
 private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, month: YearMonth, store: AppStore) {
-    var department by remember { mutableStateOf("mic") }
-    val label = when (department) { "mic" -> "Mic Men"; "av" -> "Audio / Video"; else -> "Platform" }
+    val options = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty() else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
+    var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "mic") }
+    val label = options.firstOrNull { it.first == department }?.second ?: "Department"
+
     val ranking = reviews.filter { it.department == department && it.status != "excused" }
         .groupBy { it.personId }
         .mapNotNull { (id, rows) ->
@@ -615,7 +618,7 @@ private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, mo
         Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(13.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform").forEach { (key, text) ->
+                    options.forEach { (key, text) ->
                         FilterPill(text, department == key) { department = key }
                     }
                 }
@@ -815,7 +818,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                                             Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                             Column(Modifier.weight(1f).padding(start = 9.dp)) {
-                                                Text("${meetingLabel(meeting.type)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                                 Text(prettyTime(meeting.time), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                             }
                                         }
@@ -891,7 +894,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                     }, shape = RoundedCornerShape(13.dp), color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface, border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                         Row(Modifier.padding(horizontal = 11.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(MaterialSymbol("calendar-days"), null, Modifier.size(15.dp), tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary)
-                            Text("${meetingLabel(meeting.type).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                            Text("${meetingTitle(meeting).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
                             if (open > 0) Text("$open open", fontSize = 9.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         }
                     }
@@ -988,7 +991,7 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
                 Icon(MaterialSymbol("calendar-days"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("${meetingLabel(meeting.type)}, ${friendlyDate(meeting.date)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("${prettyTime(meeting.time)} · ${meeting.slots.count { it.isAssigned() }}/${meeting.slots.size} filled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
                 if (open > 0) Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer) { Text("$open open", Modifier.padding(horizontal = 9.dp, vertical = 5.dp), fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
@@ -1327,7 +1330,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Row(Modifier.fillMaxWidth().clickable { expanded = if (isExpanded) expanded - key else expanded + key }.background(if (isExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(MaterialSymbol("calendar-check"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                Text("${meetingLabel(meeting.type)}, ${friendlyDate(meeting.date)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                 Text("${prettyTime(meeting.time)} · $reviewed/${assigned.size} reviewed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Icon(MaterialSymbol(if (isExpanded) "chevron-up" else "chevron-down"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1378,7 +1381,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             Avatar(slot.name ?: "?", 44.dp, person?.let { store.personPhotos.value[it.id] })
                             Column(Modifier.weight(1f).padding(start = 11.dp)) {
                                 Text(slot.name ?: "Personnel", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${meetingLabel(meeting.type)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                                 Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -1755,7 +1758,7 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = 4f })
         val band = dayColors[meeting.type] ?: teal
         canvas.drawRect(margin + 3f, y + 3f, width - margin - 3f, y + cardHeader, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = band })
-        canvas.drawText("${meetingLabel(meeting.type).uppercase()} MEETING", margin + 22f, y + 47f, header)
+        canvas.drawText("${meetingTitle(meeting).uppercase()} MEETING", margin + 22f, y + 47f, header)
         val meetingDate = runCatching { LocalDate.parse(meeting.date).format(DateTimeFormatter.ofPattern("MMM d, yyyy")) }.getOrDefault(meeting.date)
         val meta = "$meetingDate · ${prettyTime(meeting.time)}"
         val metaWidth = date.measureText(meta)
@@ -2056,7 +2059,7 @@ private fun AssignmentPickerDialog(meeting:Meeting,slot:Slot,candidates:List<Per
             Column {
                 Row(Modifier.fillMaxWidth().padding(start=20.dp,end=12.dp,top=17.dp,bottom=13.dp),verticalAlignment=Alignment.CenterVertically){
                     Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol("users-round"),null,tint=MaterialTheme.colorScheme.primary)}
-                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingLabel(meeting.type)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
+                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
                     IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close",tint=MaterialTheme.colorScheme.onSurfaceVariant)}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
@@ -2258,6 +2261,7 @@ private fun slotIcon(slot: Slot): String = when (slot.department) {
     else -> "podium"
 }
 private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturday"->"Saturday";"sunday"->"Sunday";else->type.replace('_',' ').split(' ').joinToString(" "){it.replaceFirstChar(Char::uppercase)}}
+private fun meetingTitle(meeting: Meeting): String = meeting.displayLabel?.takeIf { it.isNotBlank() } ?: meetingLabel(meeting.type)
 private fun friendlyDate(date:String)=try{LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MMM d"))}catch(_:Exception){date}
 private fun prettyTime(time:String)=try{val parts=time.split(":");val h=parts[0].toInt();val m=parts.getOrElse(1){"00"};"${if(h%12==0)12 else h%12}:$m ${if(h<12)"AM" else "PM"}"}catch(_:Exception){time}
 private fun Person.eligibleSummary():String=buildList { if(mic)add("Mic");if(audio||video)add("Audio / Video");if(platform)add("Platform") }.joinToString(" · ").ifBlank { "No eligible assignments" }
