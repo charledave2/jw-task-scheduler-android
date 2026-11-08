@@ -1,11 +1,16 @@
 package com.quarry.congregationscheduler
 
 import android.content.Context
+import android.net.Uri
+import android.provider.DocumentsContract
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.DayOfWeek
+import java.time.Instant
 import java.time.LocalDate
 import java.time.YearMonth
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 data class LocalAssignmentRole(val id:String, val label:String, val backup:Boolean=false, val active:Boolean=true)
 data class LocalDepartment(val id:String, val label:String, val roles:List<LocalAssignmentRole>, val active:Boolean=true)
@@ -14,7 +19,10 @@ data class LocalWorkspaceConfig(val groupCount:Int, val departments:List<LocalDe
 
 /** Private, device-only workspace. The JSON file is also the portable backup format. */
 class LocalWorkspaceStore(context: Context) {
-    private val file = java.io.File(context.filesDir, "local-workspace.json")
+    private val appContext = context.applicationContext
+    private val resolver = appContext.contentResolver
+    private val file = java.io.File(appContext.filesDir, "local-workspace.json")
+    private val backupPreferences = appContext.getSharedPreferences("local_auto_backup", Context.MODE_PRIVATE)
     private var root = readRoot()
 
     @Synchronized private fun readRoot(): JSONObject = runCatching {
@@ -26,13 +34,99 @@ class LocalWorkspaceStore(context: Context) {
         if (!has("reviews")) put("reviews", JSONArray())
         if (!has("localConfig")) put("localConfig", configJson(defaultConfig(optJSONObject("settings") ?: JSONObject())))
     }
-    @Synchronized private fun save() { file.writeText(root.toString()) }
-    @Synchronized fun export(): String = root.toString(2)
+
+    data class AutoBackupInfo(val enabled:Boolean, val folderName:String?, val lastSaved:String?, val error:String?)
+
+    @Synchronized private fun save() {
+        file.writeText(root.toString())
+        if (backupPreferences.getBoolean("enabled", false)) {
+            runCatching { writeAutomaticBackup() }
+                .onSuccess { backupPreferences.edit().putString("last_saved", Instant.now().toString()).remove("last_error").apply() }
+                .onFailure { backupPreferences.edit().putString("last_error", it.message ?: "Automatic backup failed.").apply() }
+        }
+    }
+
+    @Synchronized fun autoBackupInfo():AutoBackupInfo {
+        val uri=backupPreferences.getString("tree_uri",null)?.let(Uri::parse)
+        return AutoBackupInfo(
+            backupPreferences.getBoolean("enabled",false),
+            uri?.let(::folderDisplayName),
+            backupPreferences.getString("last_saved",null)?.let { runCatching { Instant.parse(it).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMM d, h:mm a")) }.getOrNull() },
+            backupPreferences.getString("last_error",null)
+        )
+    }
+
+    @Synchronized fun setAutoBackupEnabled(enabled:Boolean) {
+        if(enabled) require(backupPreferences.getString("tree_uri",null)!=null) { "Choose a backup folder first." }
+        backupPreferences.edit().putBoolean("enabled",enabled).remove("last_error").apply()
+        if(enabled) {
+            try {
+                writeAutomaticBackup()
+                backupPreferences.edit().putString("last_saved",Instant.now().toString()).remove("last_error").apply()
+            } catch(error:Exception) {
+                backupPreferences.edit().putString("last_error",error.message ?: "Automatic backup failed.").apply()
+                throw error
+            }
+        }
+    }
+
+    @Synchronized fun configureAutoBackupFolder(uri:Uri):String {
+        backupPreferences.edit().putString("tree_uri",uri.toString()).putBoolean("enabled",true).remove("last_error").apply()
+        return try {
+            writeAutomaticBackup()
+            backupPreferences.edit().putString("last_saved",Instant.now().toString()).apply()
+            folderDisplayName(uri)
+        } catch(error:Exception) {
+            backupPreferences.edit().putString("last_error",error.message ?: "Automatic backup failed.").apply()
+            throw error
+        }
+    }
+
+    private fun folderDisplayName(treeUri:Uri):String = runCatching {
+        val docUri=DocumentsContract.buildDocumentUriUsingTree(treeUri,DocumentsContract.getTreeDocumentId(treeUri))
+        resolver.query(docUri,arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use { cursor ->
+            if(cursor.moveToFirst()) cursor.getString(0) else null
+        } ?: treeUri.lastPathSegment ?: "Selected folder"
+    }.getOrDefault("Selected folder")
+
+    private fun writeAutomaticBackup() {
+        val treeUri=backupPreferences.getString("tree_uri",null)?.let(Uri::parse) ?: error("Choose a backup folder first.")
+        val fileName="JW-Task-Scheduler-Auto.bcdv"
+        val treeId=DocumentsContract.getTreeDocumentId(treeUri)
+        val childrenUri=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,treeId)
+        var target:Uri?=null
+        resolver.query(childrenUri,arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use { cursor ->
+            val idColumn=cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameColumn=cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            while(cursor.moveToNext()) {
+                if(nameColumn>=0 && cursor.getString(nameColumn)==fileName) {
+                    target=DocumentsContract.buildDocumentUriUsingTree(treeUri,cursor.getString(idColumn))
+                    break
+                }
+            }
+        }
+        val backupUri=target ?: DocumentsContract.createDocument(resolver,treeUri,"application/octet-stream",fileName)
+            ?: error("Could not create the .bcdv backup file in the selected folder.")
+        val snapshot=JSONObject(root.toString()).put("backupMetadata",JSONObject()
+            .put("format","JW Task Scheduler Device Backup")
+            .put("createdAt",Instant.now().toString())
+            .put("fileExtension",".bcdv"))
+        resolver.openOutputStream(backupUri,"wt")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(snapshot.toString(2)) }
+            ?: error("Could not write the automatic backup file.")
+    }
+
+    @Synchronized fun export(): String = JSONObject(root.toString()).put("backupMetadata",JSONObject()
+        .put("format","JW Task Scheduler Device Backup")
+        .put("createdAt",Instant.now().toString())
+        .put("fileExtension",".bcdv")).toString(2)
+
     @Synchronized fun import(json: String) {
         val candidate = JSONObject(json)
         require(candidate.has("people") && candidate.has("settings") && candidate.has("months")) { "This file is not a JW Task Scheduler backup." }
         root = candidate
+        root.remove("backupMetadata")
         if (!root.has("reviews")) root.put("reviews", JSONArray())
+        if (!root.has("localConfig")) root.put("localConfig",configJson(defaultConfig(root.optJSONObject("settings") ?: JSONObject())))
         save()
     }
 
