@@ -40,7 +40,7 @@ class LocalWorkspaceStore(context: Context) {
             val reviews=optJSONArray("reviews") ?: JSONArray()
             val stored=optJSONObject("localConfig")
             val hasSavedWork=people.length()>0 || months.keys().hasNext() || reviews.length()>0
-            if(!hasSavedWork && stored?.toString()==configJson(legacyDefaultConfig(settings)).toString()) {
+            if(!hasSavedWork && stored != null && parseConfig(stored) == legacyDefaultConfig(settings)) {
                 put("localConfig",configJson(defaultConfig(settings)))
             }
         }
