@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.36
+- Added shared-workspace setup for groups, departments, assignment roles, and meeting days/times.
+- Connected cloud schedule, assignments, reviews, reports, and personnel eligibility to congregation setup.
+- Added custom department membership support for shared workspaces.
+
 ## 1.0.35
 - Added device-only local workspace setup and optional shared workspace sign-in.
 - Added manual JSON backup and restore for local workspace data.
