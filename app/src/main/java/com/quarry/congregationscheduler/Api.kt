@@ -14,7 +14,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.DayOfWeek
 
-private const val API_BASE = "https://congregation-scheduler-pro.pages.dev/"
+private const val API_BASE = "https://main.congregation-scheduler-pro.pages.dev/"
 
 class TokenStore(context: Context) {
     private val prefs by lazy {
@@ -36,10 +36,11 @@ data class Person(
     val id: String, val name: String, val group: Int, val status: String, val noThursday: Boolean,
     val mic: Boolean, val audio: Boolean, val video: Boolean, val platform: Boolean, val gate: Boolean = false,
     val remarks: String = "", val allowDuplicate: Boolean = false, val ignoreMeetingConflict: Boolean = false,
-    val neverAutoAssign: Boolean = false, val assignmentPriority: String = "normal", val avatarUpdatedAt: String? = null
+    val neverAutoAssign: Boolean = false, val assignmentPriority: String = "normal", val avatarUpdatedAt: String? = null,
+    val customDepartmentIds: Set<String> = emptySet()
 )
 data class Slot(val key: String, val label: String, val personId: String?, val name: String?, val department: String, val backup: Boolean = false, val locked: Boolean = false)
-data class Meeting(val date: String, val type: String, val time: String, val slots: List<Slot>, val rawMic: JSONObject?)
+data class Meeting(val date: String, val type: String, val time: String, val slots: List<Slot>, val rawMic: JSONObject?, val eligibleGroups: Set<Int>? = null, val displayLabel: String? = null, val dayOfWeek: Int? = null)
 data class UserInfo(val id: String, val username: String, val displayName: String, val role: String, val permissions: String)
 data class WorkspaceSettings(val name: String, val thursday: String, val saturday: String, val sunday: String)
 data class ScheduleData(val people: List<Person>, val meetings: List<Meeting>, val settings: WorkspaceSettings)
@@ -100,123 +101,90 @@ class ApiClient(context: Context) {
 
     suspend fun getMe(): UserInfo = withContext(Dispatchers.IO) { parseUser(request("api/auth/me").getJSONObject("user")) }
 
-    suspend fun loadSchedule(month: YearMonth = YearMonth.now()): ScheduleData = withContext(Dispatchers.IO) {
-        val m = month.toString()
-        val peopleJson = request("api/micmen").optJSONArray("mic_men") ?: JSONArray()
-        val people = (0 until peopleJson.length()).map { i ->
-            val p = peopleJson.getJSONObject(i)
-            Person(p.optString("id"), p.optString("name"), p.optInt("group_number", 1), p.optString("status", "active"), p.optInt("no_thursday") != 0,
-                p.optInt("role_mic", 1) != 0, p.optInt("role_audio") != 0, p.optInt("role_video") != 0, p.optInt("role_attendant") != 0, p.optInt("role_gate") != 0,
-                p.optString("remarks"), p.optBoolean("allow_duplicate"), p.optBoolean("ignore_meeting_conflict"), p.optBoolean("never_auto_assign"), p.optString("assignment_priority", "normal"), p.optString("avatar_updated_at").takeIf { it.isNotBlank() && it != "null" })
-        }
-        val micRows = request("api/schedules?month=$m").optJSONArray("schedules") ?: JSONArray()
-        val deptRows = request("api/departments?month=$m").optJSONArray("assignments") ?: JSONArray()
-        val byKey = linkedMapOf<String, MutableMeeting>()
-        for (i in 0 until micRows.length()) {
-            val row = micRows.getJSONObject(i)
-            val date = row.optString("meeting_date")
-            val type = row.optString("meeting_type")
-            val key = "$date|$type"
-            val meeting = byKey.getOrPut(key) { MutableMeeting(date, type, row.optString("meeting_time"), mutableListOf(), row) }
-            val micSlots = listOf(
-                Triple("main_mic_1", "Main Mic 1", false), Triple("main_mic_2", "Main Mic 2", false),
-                Triple("backup_mic_1", "Backup Mic 1", true), Triple("backup_mic_2", "Backup Mic 2", true)
-            )
-            micSlots.forEach { (field, label, backup) ->
-                val id = row.opt(field)?.let { if (it == JSONObject.NULL) null else it.toString() }
-                meeting.slots.add(Slot(field, label, id, row.optString("${field}_name").takeIf { it.isNotBlank() && it != "null" }, "mic", backup, parseLocks(row.optString("locked_slots")).optBoolean(field)))
-            }
-        }
-        for (i in 0 until deptRows.length()) {
-            val row = deptRows.getJSONObject(i)
-            val date = row.optString("meeting_date")
-            val type = row.optString("meeting_type")
-            val key = "$date|$type"
-            val meeting = byKey.getOrPut(key) { MutableMeeting(date, type, row.optString("meeting_time"), mutableListOf(), null) }
-            val department = row.optString("department")
-            val slotKey = row.optString("slot_key")
-            val label = slotKey.replace('_', ' ').split(' ').joinToString(" ") { it.replaceFirstChar(Char::uppercase) }
-            val personId = row.opt("person_id")?.let { if (it == JSONObject.NULL) null else it.toString() }
-            val personName = row.optString("person_name").takeIf { it.isNotBlank() && it != "null" }
-            meeting.slots.add(Slot("dept:$slotKey", label, personId, personName, department, row.optInt("is_backup") != 0, row.optInt("locked") != 0))
-        }
-        val settingsObj = request("api/settings").optJSONObject("settings") ?: JSONObject()
-        val settings = WorkspaceSettings(settingsObj.optString("congregation_name", "Congregation"), settingsObj.optString("thursday_time", "18:00"), settingsObj.optString("saturday_time", "15:30"), settingsObj.optString("sunday_time", "07:45"))
-        var date = month.atDay(1)
-        while (date.month == month.month) {
-            val type = when (date.dayOfWeek) {
-                DayOfWeek.THURSDAY -> "thursday"
-                DayOfWeek.SATURDAY -> "saturday"
-                DayOfWeek.SUNDAY -> "sunday"
-                else -> null
-            }
-            if (type != null) {
-                val key = "${date}|$type"
-                byKey.getOrPut(key) {
-                    val time = when (type) { "thursday" -> settings.thursday; "saturday" -> settings.saturday; else -> settings.sunday }
-                    MutableMeeting(date.toString(), type, time, mutableListOf(), null)
-                }
-                val meeting = byKey.getValue(key)
-                val existing = meeting.slots.associateBy { it.key }
-                val requiredSlots = listOf(
-                    Triple("main_mic_1", "Main Mic 1", "mic"), Triple("main_mic_2", "Main Mic 2", "mic"),
-                    Triple("backup_mic_1", "Backup Mic 1", "mic"), Triple("backup_mic_2", "Backup Mic 2", "mic"),
-                    Triple("dept:audio_operator", "Audio Operator", "av"), Triple("dept:video_operator", "Video Operator", "av"),
-                    Triple("dept:backup_av_operator", "Backup A/V Operator", "av"), Triple("dept:attendant_1", "Platform", "attendant"),
-                    Triple("dept:backup_attendant", "Platform Backup", "attendant")
-                )
-                meeting.slots.clear()
-                requiredSlots.forEach { (slotKey, label, department) ->
-                    val populated = existing[slotKey]
-                    meeting.slots.add(if (populated != null) populated.copy(label = label) else Slot(slotKey, label, null, null, department, slotKey.contains("backup_")))
-                }
-            }
-            date = date.plusDays(1)
-        }
-        ScheduleData(people, byKey.values.map { Meeting(it.date, it.type, it.time, it.slots, it.raw) }.sortedWith(compareBy({ it.date }, { it.type })), settings)
+    suspend fun loadWorkspaceConfig(): LocalWorkspaceConfig = withContext(Dispatchers.IO) {
+        parseWorkspaceConfig(request("api/workspace/config").getJSONObject("config"))
+    }
+
+    suspend fun saveWorkspaceConfig(config: LocalWorkspaceConfig): LocalWorkspaceConfig = withContext(Dispatchers.IO) {
+        val saved=request("api/workspace/config","PUT",JSONObject().put("config",workspaceConfigJson(config))).getJSONObject("config")
+        parseWorkspaceConfig(saved)
+    }
+
+    private fun parseWorkspaceConfig(value: JSONObject): LocalWorkspaceConfig {
+        val departmentRows=value.optJSONArray("departments") ?: JSONArray()
+        val meetingRows=value.optJSONArray("meetings") ?: JSONArray()
+        val departments=(0 until departmentRows.length()).map { i -> departmentRows.getJSONObject(i).let { row ->
+            val roles=row.optJSONArray("roles") ?: JSONArray()
+            LocalDepartment(row.optString("id"),row.optString("label"),(0 until roles.length()).map { j -> roles.getJSONObject(j).let { role ->
+                LocalAssignmentRole(role.optString("id"),role.optString("label"),role.optBoolean("backup"),role.optBoolean("active",true))
+            }},row.optBoolean("active",true))
+        }}
+        val meetings=(0 until meetingRows.length()).map { i -> meetingRows.getJSONObject(i).let { row ->
+            val groups=row.optJSONArray("eligibleGroups") ?: JSONArray()
+            LocalMeetingRule(row.optString("id"),row.optString("label"),row.optInt("dayOfWeek"),row.optString("time"),
+                (0 until groups.length()).map { groups.optInt(it) }.toSet(),row.optBoolean("active",true))
+        }}
+        return LocalWorkspaceConfig(value.optInt("groupCount",9),departments,meetings)
+    }
+
+    private fun workspaceConfigJson(config: LocalWorkspaceConfig)=JSONObject()
+        .put("groupCount",config.groupCount)
+        .put("departments",JSONArray(config.departments.map { dept -> JSONObject().put("id",dept.id).put("label",dept.label).put("active",dept.active)
+            .put("roles",JSONArray(dept.roles.map { role -> JSONObject().put("id",role.id).put("label",role.label).put("backup",role.backup).put("active",role.active) })) }))
+        .put("meetings",JSONArray(config.meetings.map { meeting -> JSONObject().put("id",meeting.id).put("label",meeting.label)
+            .put("dayOfWeek",meeting.dayOfWeek).put("time",meeting.time).put("active",meeting.active)
+            .put("eligibleGroups",JSONArray(meeting.eligibleGroups.sorted())) }))
+
+    suspend fun loadSchedule(month: YearMonth = YearMonth.now(), workspaceConfig: LocalWorkspaceConfig? = null): ScheduleData = withContext(Dispatchers.IO) {
+        val config=workspaceConfig ?: loadWorkspaceConfig()
+        val peopleRows=request("api/micmen").optJSONArray("mic_men") ?: JSONArray()
+        val people=(0 until peopleRows.length()).map { i -> peopleRows.getJSONObject(i).let { p ->
+            val custom=runCatching { JSONArray(p.optString("custom_department_ids_json","[]")) }.getOrDefault(JSONArray())
+            Person(p.optString("id"),p.optString("name"),p.optInt("group_number",1),p.optString("status","active"),p.optInt("no_thursday")!=0,
+                p.optInt("role_mic",0)!=0,p.optInt("role_audio")!=0,p.optInt("role_video")!=0,p.optInt("role_attendant")!=0,p.optInt("role_gate")!=0,
+                p.optString("remarks"),p.optBoolean("allow_duplicate"),p.optBoolean("ignore_meeting_conflict"),p.optBoolean("never_auto_assign"),
+                p.optString("assignment_priority","normal"),p.optString("avatar_updated_at").takeIf { it.isNotBlank()&&it!="null" },
+                (0 until custom.length()).map { custom.optString(it) }.toSet())
+        }}
+        val response=request("api/workspace/schedule?month=$month")
+        val rows=response.optJSONArray("meetings") ?: JSONArray()
+        val meetings=(0 until rows.length()).map { i -> rows.getJSONObject(i).let { row ->
+            val slotsJson=row.optJSONArray("slots") ?: JSONArray()
+            val slots=(0 until slotsJson.length()).map { j -> slotsJson.getJSONObject(j).let { slot ->
+                Slot(slot.optString("role_id"),slot.optString("role_label"),slot.optString("person_id").takeIf { it.isNotBlank()&&it!="null" },
+                    slot.optString("person_name").takeIf { it.isNotBlank()&&it!="null" },slot.optString("department_id"),
+                    slot.optBoolean("backup"),slot.optBoolean("locked"))
+            }}
+            val groupJson=row.optJSONArray("eligible_groups") ?: JSONArray()
+            Meeting(row.optString("meeting_date"),row.optString("meeting_id"),row.optString("meeting_time"),slots,null,
+                (0 until groupJson.length()).map { groupJson.optInt(it) }.toSet(),row.optString("meeting_label"),row.optInt("day_of_week"))
+        }}.sortedWith(compareBy({it.date},{it.type}))
+        val settingsObj=request("api/settings").optJSONObject("settings") ?: JSONObject()
+        val legacyTimes=config.meetings.associateBy { it.dayOfWeek }
+        val settings=WorkspaceSettings(settingsObj.optString("congregation_name","Congregation"),
+            legacyTimes[4]?.time ?: "18:00",legacyTimes[6]?.time ?: "15:30",legacyTimes[7]?.time ?: "07:45")
+        ScheduleData(people,meetings,settings)
     }
 
     suspend fun loadTaskReviews(month: YearMonth = YearMonth.now()): List<TaskReview> = withContext(Dispatchers.IO) {
-        val rows = request("api/task-reviews?month=$month").optJSONArray("reviews") ?: JSONArray()
+        val rows=request("api/workspace/task-reviews?month=$month").optJSONArray("reviews") ?: JSONArray()
         (0 until rows.length()).map { i -> rows.getJSONObject(i).let { r -> TaskReview(
-            r.optString("meeting_date"), r.optString("meeting_type"), r.optString("department"), r.optString("slot_key"),
-            r.optString("person_id"), r.optString("person_name"), r.optString("status"), r.optString("note")
-        ) } }
+            r.optString("meeting_date"),r.optString("meeting_type"),r.optString("department"),r.optString("slot_key"),
+            r.optString("person_id"),r.optString("person_name"),r.optString("status"),r.optString("note")
+        )}}
     }
 
     suspend fun saveTaskReview(meeting: Meeting, slot: Slot, status: String) = withContext(Dispatchers.IO) {
-        val department = if (slot.department == "mic") "mic" else slot.department
-        request("api/task-reviews", "POST", JSONObject()
-            .put("meeting_date", meeting.date).put("meeting_type", meeting.type).put("department", department)
-            .put("slot_key", slot.key.removePrefix("dept:")).put("person_id", slot.personId?.toIntOrNull())
-            .put("status", status))
+        request("api/workspace/task-reviews","POST",JSONObject()
+            .put("meeting_date",meeting.date).put("meeting_id",meeting.type).put("department_id",slot.department)
+            .put("role_id",slot.key).put("person_id",slot.personId?.toIntOrNull()).put("status",status))
     }
 
     suspend fun assign(meeting: Meeting, slot: Slot, person: Person?): Unit = withContext(Dispatchers.IO) {
-        if (slot.department == "mic") {
-            val source = meeting.rawMic
-            val body = source?.let { JSONObject(it.toString()) } ?: JSONObject()
-                .put("month_key", meeting.date.take(7))
-                .put("meeting_date", meeting.date)
-                .put("meeting_type", meeting.type)
-                .put("meeting_time", meeting.time)
-                .put("main_mic_1", JSONObject.NULL)
-                .put("main_mic_2", JSONObject.NULL)
-                .put("backup_mic_1", JSONObject.NULL)
-                .put("backup_mic_2", JSONObject.NULL)
-                .put("locked_slots", JSONObject())
-            body.put(slot.key, person?.id?.toIntOrNull() ?: JSONObject.NULL)
-            val nameField = "${slot.key}_name"
-            body.remove(nameField)
-            request("api/schedules", "POST", body)
-        } else {
-            val month = meeting.date.take(7)
-            val slotKey = slot.key.removePrefix("dept:")
-            val payloadRow = JSONObject().put("month_key", month).put("meeting_date", meeting.date).put("meeting_type", meeting.type)
-                .put("meeting_time", meeting.time).put("department", slot.department).put("slot_key", slotKey)
-                .put("person_id", person?.id?.toIntOrNull() ?: JSONObject.NULL).put("locked", slot.locked)
-            request("api/departments", "POST", JSONObject().put("assignments", JSONArray().put(payloadRow)))
-        }
+        request("api/workspace/assignments","POST",JSONObject()
+            .put("meeting_date",meeting.date).put("meeting_id",meeting.type).put("meeting_time",meeting.time)
+            .put("department_id",slot.department).put("role_id",slot.key)
+            .put("person_id",person?.id?.toIntOrNull()).put("locked",slot.locked))
     }
 
     suspend fun createPerson(person: Person) = withContext(Dispatchers.IO) {
@@ -269,6 +237,7 @@ class ApiClient(context: Context) {
         .put("role_mic", person.mic).put("role_audio", person.audio).put("role_video", person.video).put("role_attendant", person.platform).put("role_gate", person.gate)
         .put("allow_duplicate", person.allowDuplicate).put("ignore_meeting_conflict", person.ignoreMeetingConflict)
         .put("never_auto_assign", person.neverAutoAssign).put("assignment_priority", person.assignmentPriority)
+        .put("custom_department_ids", JSONArray(person.customDepartmentIds.toList()))
 
     suspend fun loadUsers(): List<ManagedUser> = withContext(Dispatchers.IO) {
         val rows = request("api/users").optJSONArray("users") ?: JSONArray()

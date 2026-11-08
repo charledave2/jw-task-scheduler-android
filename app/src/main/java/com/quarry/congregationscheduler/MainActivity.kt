@@ -105,7 +105,11 @@ class AppStore(context: android.content.Context) {
     val calendarRequestedDate = mutableStateOf<LocalDate?>(null)
     val calendarShouldOpenDate = mutableStateOf(false)
     val mode = mutableStateOf(preferences.getString("workspace_mode", null))
+    val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
+    val cloudConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
+    val autoBackup = mutableStateOf(local.autoBackupInfo())
     val localMode get() = mode.value == "local"
+    val workspaceConfig get() = if (localMode) localConfig.value else cloudConfig.value
 
     fun createLocalWorkspace(name: String) {
         mode.value = "local"
@@ -115,8 +119,14 @@ class AppStore(context: android.content.Context) {
     }
     fun exportLocalBackup(): String = local.export()
     fun importLocalBackup(content: String) = local.import(content)
+    fun configureAutoBackupFolder(uri: Uri): String = local.configureAutoBackupFolder(uri).also { autoBackup.value = local.autoBackupInfo() }
+    fun setAutoBackupEnabled(enabled: Boolean) { local.setAutoBackupEnabled(enabled); autoBackup.value = local.autoBackupInfo() }
+    fun refreshAutoBackupInfo() { autoBackup.value = local.autoBackupInfo() }
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
+    fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
+    fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config; refreshAutoBackupInfo() }
+    suspend fun saveCloudConfig(config:LocalWorkspaceConfig) { cloudConfig.value=api.saveWorkspaceConfig(config) }
 
     suspend fun initialize() {
         loading.value = true
@@ -147,7 +157,8 @@ class AppStore(context: android.content.Context) {
     suspend fun load() {
         error.value = null
         try {
-            data.value = if (localMode) local.schedule(month.value) else api.loadSchedule(month.value)
+            if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
+            else { cloudConfig.value = api.loadWorkspaceConfig(); data.value = api.loadSchedule(month.value, cloudConfig.value) }
             // Keep schedules usable while the Cloudflare migration/API update is being deployed.
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
@@ -155,14 +166,14 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String) {
         val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", status)
-        if (localMode) local.review(review) else api.saveTaskReview(meeting, slot, status)
+        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status)
         allTaskReviews.value = null
         val reviewedMonth = YearMonth.from(LocalDate.parse(meeting.date))
         taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) local.reviews(reviewedMonth) else api.loadTaskReviews(reviewedMonth)
     }
     suspend fun loadReviewRange(start: LocalDate, end: LocalDate): Pair<List<Meeting>, List<TaskReview>> {
         val months = generateSequence(YearMonth.from(start)) { previous -> if (previous < YearMonth.from(end)) previous.plusMonths(1) else null }.toList()
-        val schedules = months.map { if (localMode) local.schedule(it) else api.loadSchedule(it) }
+        val schedules = months.map { if (localMode) local.schedule(it) else api.loadSchedule(it, cloudConfig.value ?: api.loadWorkspaceConfig()) }
         val reviews = months.flatMap { if (localMode) local.reviews(it) else api.loadTaskReviews(it) }
         return schedules.flatMap { it.meetings }.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) } to reviews.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) }
     }
@@ -180,7 +191,7 @@ class AppStore(context: android.content.Context) {
         return loaded
     }
     suspend fun changeMonth(next: YearMonth) { month.value = next; load() }
-    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month)
+    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month, cloudConfig.value ?: api.loadWorkspaceConfig())
     suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) local.saveAssignment(meeting, slot, person) else api.assign(meeting, slot, person); load() }
     suspend fun savePerson(person: Person) {
         loading.value = true
@@ -309,11 +320,20 @@ fun SchedulerApp() {
     var snack by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     var showSplash by remember { mutableStateOf(true) }
-    val backupWriter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val backupWriter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null) scope.launch { runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportLocalBackup()) } ?: error("Could not write backup file.") }.onSuccess { snackbar.showSnackbar("Backup saved.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not save backup.") } }
     }
     val backupReader = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch { runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read backup file.") }.onSuccess { content -> runCatching { store.importLocalBackup(content); store.load() }.onSuccess { snackbar.showSnackbar("Backup restored.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not restore backup.") } }.onFailure { snackbar.showSnackbar(it.message ?: "Could not read backup.") } }
+    }
+    val autoBackupFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                store.configureAutoBackupFolder(uri)
+            }.onSuccess { folder -> snackbar.showSnackbar("Automatic backup enabled · $folder · .bcdv") }
+                .onFailure { snackbar.showSnackbar(it.message ?: "Could not enable automatic backup.") }
+        }
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -346,7 +366,8 @@ fun SchedulerApp() {
         secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
         tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
         tertiaryContainer = Color(0xFF384437), onTertiaryContainer = Color(0xFFDDE8D4),
-        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8)
+        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8),
+        inverseSurface = Color(0xFFE8E9E1), inverseOnSurface = Color(0xFF20231E), inversePrimary = Color(0xFF5C745F)
     ) else lightColorScheme(
         primary = Color(0xFF5C745F), onPrimary = Color.White, background = Color(0xFFF6F6F3),
         primaryContainer = Color(0xFFDCE8D8), onPrimaryContainer = Color(0xFF1D3021),
@@ -355,7 +376,8 @@ fun SchedulerApp() {
         outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
         onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
         tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
-        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F)
+        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F),
+        inverseSurface = Color(0xFF303B30), inverseOnSurface = Color(0xFFF6F6F3), inversePrimary = Color(0xFFA9C6A8)
     )
     MaterialTheme(colorScheme = colors) {
         SideEffect {
@@ -371,7 +393,7 @@ fun SchedulerApp() {
         } else if (signedIn == null && workspaceMode == null) {
             WorkspaceModeScreen(onLocal = { name -> store.createLocalWorkspace(name); scope.launch { runCatching { store.load() } } }, onShared = { store.chooseSharedWorkspace() })
         } else if (signedIn == null) {
-            LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } })
+            LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
             ModalNavigationDrawer(
                 drawerState = drawerState,
@@ -437,11 +459,16 @@ fun SchedulerApp() {
                             "Schedule Calendar" -> ScheduleCalendarScreen(store)
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
-                            "Reports" -> ReportsScreen(store.data.value)
+                            "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
-                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.json") }, onRestore = { backupReader.launch(arrayOf("application/json", "text/json", "text/plain")) }, onConnectShared = { store.chooseSharedWorkspace(); store.user.value = null })
+                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
+                                if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
+                                else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
+                                    scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
+                                }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
+                            })
                             else -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = MaterialTheme.colorScheme.primary)
@@ -506,7 +533,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
     var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
+        Text("JW Task Scheduler", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
         Text("Choose how your congregation stores its schedule", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp))
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -527,11 +554,11 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
 }
 
 @Composable
-private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, String) -> Unit) {
+private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, String) -> Unit, onBackToSetup: () -> Unit) {
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Spacer(Modifier.height(15.dp)); Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface); Text("Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Spacer(Modifier.height(15.dp)); Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
         Spacer(Modifier.height(28.dp)); Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(22.dp)) {
                 Text("Welcome back", fontWeight = FontWeight.Bold, fontSize = 23.sp); Text("Sign in to your workspace", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 20.dp))
@@ -541,7 +568,8 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
                 Spacer(Modifier.height(18.dp)); Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) { if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White) else Text("Sign In", fontWeight = FontWeight.SemiBold) }
             }
         }
-        Spacer(Modifier.height(18.dp)); Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp)); TextButton(onClick=onBackToSetup, enabled=!loading) { Text("Back to setup") }
+        Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
     }
 }
 
@@ -562,7 +590,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         Text("Here’s your congregation at a glance.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
         Spacer(Modifier.height(18.dp))
         if (next != null) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(19.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenCalendar(null) }) {
-            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingLabel(next.type)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
+            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingTitle(next)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
         } else EmptyCard("No upcoming meetings found.")
         val reviewable = data?.meetings.orEmpty().filter { it.date < today }.flatMap { meeting ->
             meeting.slots.filter { it.personId != null }.filter { slot -> store.taskReviews.value.none { it.date == meeting.date && it.type == meeting.type && it.department == slot.department && it.slotKey == slot.key.removePrefix("dept:") } }
@@ -579,13 +607,14 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         }
         TopPerformerCard(data?.people.orEmpty(), store.taskReviews.value, store.month.value, store)
         SectionTitle("Departments", "Directory") { onGo("People Directory") }
-        val departments = listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "platform")
+        val configuredDepartments = store.workspaceConfig?.departments?.filter { it.active }?.map { it.label to it.id }.orEmpty()
+        val departments = configuredDepartments
         departments.forEach { (name, dept) ->
-            val members = data?.people.orEmpty().filter { it.status == "active" && when (dept) { "mic" -> it.mic; "av" -> it.audio || it.video; else -> it.platform } }
-            RowCard(icon = when(dept) { "mic" -> "mic"; "av" -> "audio-lines"; else -> "podium" }, title = name, subtitle = "${members.size} active ${if (members.size == 1) "member" else "members"}", trailing = "View", onClick = { selectedDepartment = name to members })
+            val members = data?.people.orEmpty().filter { person -> person.status == "active" && when (dept) { "mic" -> person.mic; "av" -> person.audio || person.video; "attendant", "platform" -> person.platform; else -> dept in person.customDepartmentIds } }
+            RowCard(icon = when(dept) { "mic" -> "mic"; "av" -> "audio-lines"; "attendant", "platform" -> "podium"; else -> "groups" }, title = name, subtitle = "${members.size} active ${if (members.size == 1) "member" else "members"}", trailing = "View", onClick = { selectedDepartment = name to members })
         }
         SectionTitle("This Week", "Calendar") { onOpenCalendar(null) }
-        data?.meetings?.filter { it.date >= today }?.take(3)?.forEach { m -> RowCard("calendar-days", "${meetingLabel(m.type)} · ${friendlyDate(m.date)}", prettyTime(m.time), "→") { onOpenCalendar(runCatching { LocalDate.parse(m.date) }.getOrNull()) } }
+        data?.meetings?.filter { it.date >= today }?.take(3)?.forEach { m -> RowCard("calendar-days", "${meetingTitle(m)} · ${friendlyDate(m.date)}", prettyTime(m.time), "→") { onOpenCalendar(runCatching { LocalDate.parse(m.date) }.getOrNull()) } }
         Spacer(Modifier.height(18.dp))
     }
     selectedDepartment?.let { (name, members) ->
@@ -595,8 +624,10 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 
 @Composable
 private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, month: YearMonth, store: AppStore) {
-    var department by remember { mutableStateOf("mic") }
-    val label = when (department) { "mic" -> "Mic Men"; "av" -> "Audio / Video"; else -> "Platform" }
+    val options = store.workspaceConfig?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
+    var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "mic") }
+    val label = options.firstOrNull { it.first == department }?.second ?: "Department"
+
     val ranking = reviews.filter { it.department == department && it.status != "excused" }
         .groupBy { it.personId }
         .mapNotNull { (id, rows) ->
@@ -610,7 +641,7 @@ private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, mo
         Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(13.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform").forEach { (key, text) ->
+                    options.forEach { (key, text) ->
                         FilterPill(text, department == key) { department = key }
                     }
                 }
@@ -668,6 +699,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
         }
     }
     editing?.let { person -> PersonEditorDialog(
+        localConfig = store.workspaceConfig,
         person = person,
         photo = store.personPhotos.value[person.id],
         completedTasks = store.taskReviews.value.filter { it.personId == person.id && it.status == "completed" }.sortedByDescending { it.date },
@@ -809,7 +841,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                         Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                                             Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                             Column(Modifier.weight(1f).padding(start = 9.dp)) {
-                                                Text("${meetingLabel(meeting.type)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                                 Text(prettyTime(meeting.time), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                             }
                                         }
@@ -854,13 +886,15 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
     val weeks = remember(month) { exportWeeks(month) }
     val selectedWeek = weeks.firstOrNull { it.first == weekStart } ?: weeks.first()
     val weekNumber = (weeks.indexOf(selectedWeek) + 1).coerceAtLeast(1)
-    val dayOrder = mapOf("thursday" to 0, "saturday" to 1, "sunday" to 2)
+    val localDepartments = store.workspaceConfig?.departments?.filter { it.active }.orEmpty()
+    val departmentFilters = localDepartments.map { it.label }
+    fun departmentName(id: String) = localDepartments.firstOrNull { it.id == id }?.label ?: deptLabel(id)
     val meetingsThisWeek = data?.meetings.orEmpty().filter { meeting ->
         val date = LocalDate.parse(meeting.date)
         date in selectedWeek.first..selectedWeek.second && YearMonth.from(date) == month
-    }.map { meeting -> meeting.copy(slots = meeting.slots.filter { filter == "All Departments" || deptLabel(it.department) == filter }) }
+    }.map { meeting -> meeting.copy(slots = meeting.slots.filter { filter == "All Departments" || departmentName(it.department) == filter }) }
         .filter { it.slots.isNotEmpty() }
-        .sortedBy { dayOrder[it.type] ?: 9 }
+        .sortedBy { it.date }
     val rows = meetingsThisWeek.filter { meeting -> !openOnly || meeting.slots.any { !it.isAssigned() } }
     val firstMeetingKey = rows.firstOrNull()?.let { it.date + it.type }
     val expandedKeys = expandedMeetings
@@ -872,10 +906,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                 ExportPickerField(Modifier.weight(1.25f), "Week $weekNumber", "${selectedWeek.first.format(DateTimeFormatter.ofPattern("MMM d"))} – ${selectedWeek.second.format(DateTimeFormatter.ofPattern("MMM d"))}", null) { weekPickerOpen = true }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val meetingByDay = rows.associateBy { it.type }
-                listOf("thursday", "saturday", "sunday").forEach { day ->
-                    val meeting = meetingByDay[day]
-                    if (meeting != null) {
+                rows.forEach { meeting ->
                     val open = meeting.slots.count { !it.isAssigned() }
                     val key = meeting.date + meeting.type
                     val selected = focusedMeeting == key || (focusedMeeting == null && key == firstMeetingKey)
@@ -886,17 +917,16 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                     }, shape = RoundedCornerShape(13.dp), color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface, border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                         Row(Modifier.padding(horizontal = 11.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(MaterialSymbol("calendar-days"), null, Modifier.size(15.dp), tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary)
-                            Text("${meetingLabel(meeting.type).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                            Text("${meetingTitle(meeting).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
                             if (open > 0) Text("$open open", fontSize = 9.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         }
-                    }
                     }
                 }
                 if (rows.isEmpty()) Text("No meetings in this week", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(vertical = 8.dp))
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("All Departments", "Mic Men", "Audio / Video", "Platform").forEach { label -> FilterPill(label, filter == label) { filter = label; expandedMeetings = emptySet(); focusedMeeting = null } }
+                    (listOf("All Departments") + departmentFilters).forEach { label -> FilterPill(label, filter == label) { filter = label; expandedMeetings = emptySet(); focusedMeeting = null } }
                 }
                 Spacer(Modifier.width(6.dp))
             }
@@ -984,7 +1014,7 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
                 Icon(MaterialSymbol("calendar-days"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("${meetingLabel(meeting.type)}, ${friendlyDate(meeting.date)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("${prettyTime(meeting.time)} · ${meeting.slots.count { it.isAssigned() }}/${meeting.slots.size} filled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
                 if (open > 0) Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer) { Text("$open open", Modifier.padding(horizontal = 9.dp, vertical = 5.dp), fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
@@ -1031,13 +1061,14 @@ private fun PeopleScreen(store: AppStore) {
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
             items(shown, key = { it.id }) { person ->
-                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(), photoName = person.name, photo = store.personPhotos.value[person.id]) {
+                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(if(store.localMode) store.localConfig.value else null), photoName = person.name, photo = store.personPhotos.value[person.id]) {
                     if (admin) { editingPerson = person; editorOpen = true }
                 }
             }
         }
     }
     if (editorOpen && admin) PersonEditorDialog(
+        localConfig = if (store.localMode) store.localConfig.value else null,
         person = editingPerson,
         photo = editingPerson?.let { store.personPhotos.value[it.id] },
         completedTasks = editingPerson?.let { person ->
@@ -1054,10 +1085,12 @@ private fun PeopleScreen(store: AppStore) {
 }
 
 @Composable
-private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
+private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
     val isNew = person == null
     var name by remember(person?.id) { mutableStateOf(person?.name ?: "") }
-    var group by remember(person?.id) { mutableIntStateOf(person?.group ?: 1) }
+    val groupLimit = (localConfig?.groupCount ?: 9).coerceAtLeast(1)
+    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf((person?.group ?: 1).coerceIn(1, groupLimit)) }
+    var customDepartments by remember(person?.id, localConfig) { mutableStateOf(person?.customDepartmentIds ?: emptySet()) }
     var status by remember(person?.id) { mutableStateOf(person?.status ?: "active") }
     var noThursday by remember(person?.id) { mutableStateOf(person?.noThursday ?: false) }
     var mic by remember(person?.id) { mutableStateOf(person?.mic ?: false) }
@@ -1137,27 +1170,38 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
                     OutlinedTextField(name, { name = it; error = null }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("GROUP", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Surface(onClick = { groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        Surface(onClick = { if ((localConfig?.groupCount ?: 9) > 0) groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
                                     Text(group.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(groupAvailability(group, noThursday), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(if(localConfig?.groupCount==0)"Groups not configured" else "Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(if(localConfig?.groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if(localConfig?.groupCount!=0) {
+                                    Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("DEPARTMENTS & ROLES", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        PersonRoleToggle("Mic Men", mic) { mic = it }
-                        PersonRoleToggle("Audio Operator", audio) { audio = it }
-                        PersonRoleToggle("Video Operator", video) { video = it }
-                        PersonRoleToggle("Platform", platform) { platform = it }
+                        if (localConfig != null) {
+                            localConfig.departments.filter { it.active }.forEach { dept ->
+                                val checked = when (dept.id) { "mic" -> mic; "av" -> audio || video; "attendant" -> platform; else -> dept.id in customDepartments }
+                                PersonRoleToggle(dept.label, checked) { enabled ->
+                                    when (dept.id) { "mic" -> mic = enabled; "av" -> { audio = enabled; video = enabled }; "attendant" -> platform = enabled; else -> customDepartments = if (enabled) customDepartments + dept.id else customDepartments - dept.id }
+                                }
+                            }
+                        } else {
+                            PersonRoleToggle("Mic Men", mic) { mic = it }
+                            PersonRoleToggle("Audio Operator", audio) { audio = it }
+                            PersonRoleToggle("Video Operator", video) { video = it }
+                            PersonRoleToggle("Platform", platform) { platform = it }
+                        }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("STATUS", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1184,10 +1228,11 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
                     Button(onClick = {
                         val updated = Person(person?.id ?: "", name.trim(), group, status, noThursday, mic, audio, video, platform,
                             person?.gate ?: false, person?.remarks.orEmpty(), person?.allowDuplicate ?: false, person?.ignoreMeetingConflict ?: false,
-                            person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal")
+                            person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal", person?.avatarUpdatedAt, customDepartments)
                         when {
+                            localConfig?.groupCount == 0 -> error = "Set up at least one group in Workspace settings before adding personnel."
                             name.trim().length < 2 -> error = "Enter a name with at least 2 characters."
-                            !mic && !audio && !video && !platform -> error = "Select at least one department role."
+                            !mic && !audio && !video && !platform && customDepartments.isEmpty() -> error = "Select at least one department role."
                             else -> { saving = true; error = null; scope.launch { try { onSave(updated); onDismiss() } catch (e: Exception) { error = e.message ?: "Could not save person." } finally { saving = false } } }
                         }
                     }, enabled = !saving, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 17.dp, vertical = 9.dp)) {
@@ -1197,7 +1242,7 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
             }
         }
     }
-    if (groupPickerOpen) GroupPickerDialog(selected = group, noThursday = noThursday, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
+    if (groupPickerOpen) GroupPickerDialog(selected = group, groupCount = localConfig?.groupCount ?: 9, noThursday = noThursday, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
     if (confirmDelete && person != null) AlertDialog(
         onDismissRequest = { confirmDelete = false },
         title = { Text("Delete ${person.name}?") },
@@ -1208,7 +1253,7 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
 }
 
 @Composable
-private fun GroupPickerDialog(selected: Int, noThursday: Boolean, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
+private fun GroupPickerDialog(selected: Int, groupCount: Int, noThursday: Boolean, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Card(Modifier.fillMaxWidth(.88f), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(18.dp)) {
@@ -1219,18 +1264,17 @@ private fun GroupPickerDialog(selected: Int, noThursday: Boolean, onDismiss: () 
                 }
                 Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (0..2).forEach { row ->
+                    (1..groupCount.coerceIn(1, 30)).toList().chunked(4).forEach { row ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            (1..3).forEach { col ->
-                                val number = row * 3 + col
+                            row.forEach { number ->
                                 val isSelected = number == selected
-                                Surface(onClick = { onSelect(number) }, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(13.dp), color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                                Surface(onClick = { onSelect(number) }, modifier = Modifier.weight(1f).height(58.dp), shape = RoundedCornerShape(13.dp), color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                         Text(number.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
-                                        Text(when (number) { in 1..4 -> "Sunday"; in 5..9 -> "Saturday"; else -> "" }, fontSize = 9.sp, color = if (isSelected) MaterialTheme.colorScheme.onPrimary.copy(.82f) else MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
+                            repeat(4-row.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
                 }
@@ -1313,7 +1357,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Row(Modifier.fillMaxWidth().clickable { expanded = if (isExpanded) expanded - key else expanded + key }.background(if (isExpanded) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant).padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Icon(MaterialSymbol("calendar-check"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                Text("${meetingLabel(meeting.type)}, ${friendlyDate(meeting.date)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                 Text("${prettyTime(meeting.time)} · $reviewed/${assigned.size} reviewed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Icon(MaterialSymbol(if (isExpanded) "chevron-up" else "chevron-down"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1364,7 +1408,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             Avatar(slot.name ?: "?", 44.dp, person?.let { store.personPhotos.value[it.id] })
                             Column(Modifier.weight(1f).padding(start = 11.dp)) {
                                 Text(slot.name ?: "Personnel", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${meetingLabel(meeting.type)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                                 Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -1512,14 +1556,26 @@ private fun taskSlotLabel(key: String): String = when (key.removePrefix("dept:")
 }
 
 @Composable
-private fun ReportsScreen(data: ScheduleData?) {
+private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig? = null) {
     val meetings = data?.meetings.orEmpty(); val slots = meetings.flatMap { it.slots }; val filled = slots.count { it.name != null }
+    val departmentCoverage = if (localConfig != null) {
+        localConfig.departments.filter { it.active }.map { it.id to it.label }
+    } else {
+        slots.map { it.department }.distinct().map { id ->
+            id to when (id) { "mic" -> "Mic Men"; "av" -> "Audio / Video"; "attendant", "platform" -> "Platform"; else -> id.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase) }
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("INSIGHTS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Reports", fontSize = 23.sp, fontWeight = FontWeight.Bold)
         Card(Modifier.padding(top = 14.dp), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("ROTATION", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp); Text("Schedule coverage", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)); Text("Current month", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Box(Modifier.size(70.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Text(if (slots.isEmpty()) "—" else "${filled*100/slots.size}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } } }
         Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricCard("${meetings.size}", "Meetings", Modifier.weight(1f)); MetricCard("$filled", "Filled", Modifier.weight(1f)); MetricCard("${(slots.size-filled).coerceAtLeast(0)}", "Vacant", Modifier.weight(1f)) }
-        Text("Department Coverage", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
-        listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "attendant").forEach { (label,id) -> val group=slots.filter { it.department==id }; RowCard("chart", label, "${group.count { it.name!=null }} of ${group.size} positions filled", "${group.size-group.count { it.name!=null }} vacant") {} }
+        if (departmentCoverage.isNotEmpty()) {
+            Text("Department Coverage", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
+            departmentCoverage.forEach { (id,label) ->
+                val group=slots.filter { it.department==id }
+                RowCard("chart", label, "${group.count { it.name!=null }} of ${group.size} positions filled", "${(group.size-group.count { it.name!=null }).coerceAtLeast(0)} vacant") {}
+            }
+        }
         Text("Full rotation fairness reports are available in the web workspace.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 14.dp))
     }
 }
@@ -1547,7 +1603,9 @@ private fun ExportScreen(store: AppStore) {
         date != null && date in chosenWeek.first..chosenWeek.second && YearMonth.from(date) == month
     }.sortedBy { it.date }
     val period = "${chosenWeek.first.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))} – ${chosenWeek.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
-    val poster = remember(exportData, selectedMeetings, period) { renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period) }
+    val posterDepartments = if(store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
+        else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
+    val poster = renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period, posterDepartments)
     val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1694,7 +1752,7 @@ private fun firstExportWeek(month: YearMonth): LocalDate {
     return first.minusDays((first.dayOfWeek.value - 1).toLong())
 }
 
-private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, period: String): Bitmap {
+private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, period: String, departments: List<Pair<String,String>>): Bitmap {
     val width = 1080
     val margin = 62f
     val headerHeight = 295f
@@ -1713,9 +1771,15 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
     val muted = android.graphics.Color.rgb(105, 100, 85)
     val border = android.graphics.Color.rgb(207, 199, 174)
     val teal = android.graphics.Color.rgb(43, 108, 99)
-    val sage = android.graphics.Color.rgb(75, 103, 78)
-    val gold = android.graphics.Color.rgb(156, 126, 52)
-    val dayColors = mapOf("thursday" to teal, "saturday" to sage, "sunday" to gold)
+    val dayColors = mapOf(
+        1 to android.graphics.Color.rgb(57, 104, 137),   // Monday · blue
+        2 to android.graphics.Color.rgb(163, 83, 61),   // Tuesday · terracotta
+        3 to android.graphics.Color.rgb(46, 113, 102),  // Wednesday · teal
+        4 to android.graphics.Color.rgb(75, 103, 78),   // Thursday · sage
+        5 to android.graphics.Color.rgb(111, 101, 49),  // Friday · olive
+        6 to android.graphics.Color.rgb(157, 112, 56),  // Saturday · amber
+        7 to android.graphics.Color.rgb(156, 126, 52)   // Sunday · ochre
+    )
     canvas.drawColor(cream)
     fun p(color: Int, size: Float, bold: Boolean = false) = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = size; typeface = android.graphics.Typeface.create("sans-serif${if (bold) "-medium" else ""}", if (bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL) }
     val kicker = p(muted, 22f, true); kicker.letterSpacing = .12f
@@ -1739,24 +1803,36 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         val cardRect = android.graphics.RectF(margin, y, width - margin, y + cardHeight)
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cream })
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = 4f })
-        val band = dayColors[meeting.type] ?: teal
+        val labelDay=meetingTitle(meeting).trim().lowercase()
+        val dayIndex=runCatching { LocalDate.parse(meeting.date).dayOfWeek.value }.getOrElse {
+            when {
+                labelDay.startsWith("mon") -> 1
+                labelDay.startsWith("tue") -> 2
+                labelDay.startsWith("wed") -> 3
+                labelDay.startsWith("thu") -> 4
+                labelDay.startsWith("fri") -> 5
+                labelDay.startsWith("sat") -> 6
+                labelDay.startsWith("sun") -> 7
+                else -> 0
+            }
+        }
+        val band = dayColors[dayIndex] ?: teal
         canvas.drawRect(margin + 3f, y + 3f, width - margin - 3f, y + cardHeader, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = band })
-        canvas.drawText("${meetingLabel(meeting.type).uppercase()} MEETING", margin + 22f, y + 47f, header)
+        canvas.drawText("${meetingTitle(meeting).uppercase()} MEETING", margin + 22f, y + 47f, header)
         val meetingDate = runCatching { LocalDate.parse(meeting.date).format(DateTimeFormatter.ofPattern("MMM d, yyyy")) }.getOrDefault(meeting.date)
         val meta = "$meetingDate · ${prettyTime(meeting.time)}"
         val metaWidth = date.measureText(meta)
         canvas.drawText(meta, width - margin - 22f - metaWidth, y + 46f, date)
-        val labels = listOf("MIC MEN", "AUDIO / VIDEO", "PLATFORM")
-        val columns = 3
+        val columns=departments.ifEmpty { listOf("none" to "No departments configured") }
         val innerLeft = margin + 24f
         val innerRight = width - margin - 24f
-        val colWidth = (innerRight - innerLeft) / columns
-        labels.forEachIndexed { index, label ->
+        val colWidth = (innerRight - innerLeft) / columns.size
+        columns.forEachIndexed { index, (deptId, departmentLabel) ->
             val left = innerLeft + index * colWidth
             if (index > 0) canvas.drawLine(left - 16f, y + cardHeader + 24f, left - 16f, y + cardHeight - 24f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; strokeWidth = 3f })
+            val label=departmentLabel.uppercase().take(22)
             canvas.drawText(label, left, y + cardHeader + 42f, deptTitle)
-            val dept = when (label) { "MIC MEN" -> "mic"; "AUDIO / VIDEO" -> "av"; else -> "attendant" }
-            val columnSlots = meeting.slots.filter { it.department == dept }
+            val columnSlots = meeting.slots.filter { it.department == deptId }
             columnSlots.forEachIndexed { slotIndex, slot ->
                 val slotY = y + cardHeader + 80f + slotIndex * slotHeight
                 val role = slot.label.uppercase().take(28)
@@ -1782,13 +1858,15 @@ private fun createPosterShareUri(context: android.content.Context, poster: Bitma
 }
 
 @Composable
-private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onConnectShared: () -> Unit) {
+private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf<String?>(null) }
     var name by remember(store.data.value?.settings?.name) { mutableStateOf(store.data.value?.settings?.name ?: "") }
     var thu by remember(store.data.value?.settings?.thursday) { mutableStateOf(store.data.value?.settings?.thursday ?: "18:00") }
     var sat by remember(store.data.value?.settings?.saturday) { mutableStateOf(store.data.value?.settings?.saturday ?: "15:30") }
     var sun by remember(store.data.value?.settings?.sunday) { mutableStateOf(store.data.value?.settings?.sunday ?: "07:45") }
     val admin = store.user.value?.role == "admin"
+    var localConfigDialog by remember { mutableStateOf(false) }
+    var sharedSyncInfo by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
         SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
@@ -1798,7 +1876,20 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                     OutlinedButton(onClick=onBackup, modifier=Modifier.weight(1f), shape=RoundedCornerShape(12.dp)) { Icon(MaterialSymbol("download"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Back up") }
                     OutlinedButton(onClick=onRestore, modifier=Modifier.weight(1f), shape=RoundedCornerShape(12.dp)) { Icon(MaterialSymbol("upload"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Restore") }
                 }
-                TextButton(onClick=onConnectShared, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
+                val backup = store.autoBackup.value
+                PreferenceRow(icon="download",title="Automatic backup",subtitle=when {
+                    backup.folderName != null -> "${backup.folderName} · JW Task Scheduler Auto.bcdv"
+                    else -> "Save a .bcdv copy to a folder you choose"
+                }) {
+                    Switch(checked=backup.enabled,onCheckedChange=onAutoBackupToggle,colors=appSwitchColors())
+                }
+                OutlinedButton(onClick=onChooseAutoBackupFolder,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp)) {
+                    Icon(MaterialSymbol("file-down"),null,Modifier.size(17.dp)); Spacer(Modifier.width(7.dp))
+                    Text(if(backup.folderName==null) "Choose backup folder" else "Change backup folder")
+                }
+                backup.lastSaved?.let { Text("Last saved: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
+                backup.error?.let { Text("Backup issue: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=4.dp)) }
+                TextButton(onClick={ sharedSyncInfo=true }, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
             } else {
                 Text("Optional sync is enabled for this shared workspace.", fontSize=11.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
             }
@@ -1806,10 +1897,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
         SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
             OutlinedTextField(name, { name=it }, label={Text("Congregation Name")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
             Spacer(Modifier.height(8.dp))
-            MeetingTimeRow("Thursday", thu) { thu=it }
-            MeetingTimeRow("Saturday", sat) { sat=it }
-            MeetingTimeRow("Sunday", sun) { sun=it }
-            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null } catch(e:Exception) { } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
+            Text("Manage meeting days, times, groups, departments, and roles in workspace setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null; snackbar.showSnackbar("Workspace settings saved.") } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace settings.") } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
+            if (admin) {
+                OutlinedButton(onClick={ localConfigDialog=true }, modifier=Modifier.fillMaxWidth().padding(top=8.dp).height(44.dp), shape=RoundedCornerShape(12.dp)) {
+                    Icon(MaterialSymbol("tune"), null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Groups, departments & meetings")
+                }
+                Text(if (store.localMode) "Customize groups, departments, roles, and meeting times for this device." else "Customize groups, departments, roles, and meeting times for the shared congregation.", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
+            }
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) { Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold); TextButton(onClick=onAddAccount) { Text("+ Add") } }
@@ -1861,7 +1956,148 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             }
         }
     }
+    if (sharedSyncInfo) {
+        AlertDialog(
+            onDismissRequest = { sharedSyncInfo = false },
+            title = { Text("Shared sync is planned") },
+            text = { Text("Your local workspace stays on this device. This button will not open the existing cloud login. A future setup can let the admin create a congregation sync space, invite other devices with a code or QR, and keep working offline while changes sync when connected.") },
+            confirmButton = { TextButton(onClick = { sharedSyncInfo = false }) { Text("Got it") } }
+        )
+    }
+    if (localConfigDialog && admin) LocalWorkspaceConfigDialog(
+        initial = store.workspaceConfig ?: LocalWorkspaceConfig(0, emptyList(), emptyList()),
+        maxGroups = if (store.localMode) 30 else 9,
+        workspaceLabel = if (store.localMode) "LOCAL WORKSPACE" else "SHARED WORKSPACE",
+        onDismiss = { localConfigDialog=false },
+        onSave = { value -> scope.launch { try { if (store.localMode) store.saveLocalConfig(value) else store.saveCloudConfig(value); store.load(); snackbar.showSnackbar("Workspace setup saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace setup.") } } }
+    )
 }
+
+@Composable
+private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups: Int, workspaceLabel: String, onDismiss: () -> Unit, onSave: (LocalWorkspaceConfig) -> Unit) {
+    var groupCount by remember(initial) { mutableIntStateOf(initial.groupCount) }
+    var departments by remember(initial) { mutableStateOf<List<LocalDepartment>>(initial.departments) }
+    var meetings by remember(initial) { mutableStateOf<List<LocalMeetingRule>>(initial.meetings) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var newDepartment by remember { mutableStateOf("") }
+    var newMeeting by remember { mutableStateOf("") }
+    var selectedDay by remember { mutableIntStateOf(0) }
+    var newMeetingTime by remember { mutableStateOf("") }
+    val context=LocalContext.current
+    val scroll=rememberScrollState()
+    Dialog(onDismissRequest=onDismiss, properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        Surface(Modifier.fillMaxWidth(.94f).widthIn(max=520.dp).fillMaxHeight(.88f), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
+            Column {
+                Row(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text(workspaceLabel,fontSize=9.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
+                    IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close")}
+                }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                Column(Modifier.weight(1f).verticalScroll(scroll).padding(horizontal=18.dp,vertical=14.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                    Text("GROUPS",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        Text("Number of groups",Modifier.weight(1f),fontSize=13.sp)
+                        OutlinedButton(onClick={if(groupCount>0)groupCount--},enabled=groupCount>0,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
+                        Text(if(groupCount==0)"—" else groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
+                        OutlinedButton(onClick={if(groupCount<maxGroups)groupCount++},enabled=groupCount<maxGroups,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
+                    }
+                    Text(if(groupCount==0)"No groups configured yet. Add the number your congregation uses." else "$groupCount numbered groups are available for personnel and meeting eligibility.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                    Text("DEPARTMENTS & ROLES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(departments.isEmpty()) Text("No departments yet. Add one below, then add the assignment roles it needs.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    departments.forEachIndexed { index, dept ->
+                        Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
+                            Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
+                                Row(verticalAlignment=Alignment.CenterVertically) {
+                                    OutlinedTextField(dept.label,{ value -> departments=departments.toMutableList().also { it[index]=dept.copy(label=value) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Department")},shape=RoundedCornerShape(11.dp))
+                                    IconButton(onClick={departments=departments.toMutableList().also { it[index]=dept.copy(active=!dept.active) }}) { Icon(MaterialSymbol(if(dept.active)"archive" else "unarchive"),if(dept.active)"Archive department" else "Restore department",tint=MaterialTheme.colorScheme.primary) }
+                                    IconButton(onClick={departments=departments.filterNot { it.id==dept.id }}) { Icon(MaterialSymbol("delete"),"Delete department",tint=MaterialTheme.colorScheme.error) }
+                                }
+                                dept.roles.forEachIndexed { roleIndex, role ->
+                                    Row(verticalAlignment=Alignment.CenterVertically) {
+                                        OutlinedTextField(role.label,{ value -> val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(label=value) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Assignment / role")},shape=RoundedCornerShape(10.dp))
+                                        IconButton(onClick={ val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(active=!role.active) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol(if(role.active)"archive" else "unarchive"),if(role.active)"Archive role" else "Restore role",tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+                                        IconButton(onClick={ val updated=dept.roles.filterNot { it.id==role.id }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol("delete"),"Delete role",tint=MaterialTheme.colorScheme.error) }
+                                    }
+                                }
+                                TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}",""); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
+                                if(!dept.active) Text("Archived for new schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(newDepartment,{newDepartment=it},modifier=Modifier.weight(1f),singleLine=true,label={Text("New department")},shape=RoundedCornerShape(11.dp))
+                        FilledTonalButton(onClick={ val label=newDepartment.trim(); if(label.isNotBlank()){ val id="dept_${System.currentTimeMillis()}"; departments=departments+LocalDepartment(id,label,emptyList()); newDepartment="" } },shape=RoundedCornerShape(11.dp)){Text("Add")}
+                    }
+                    HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                    Text("MEETING DAYS & TIMES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(meetings.isEmpty()) Text("No meetings yet. Add a meeting below and choose its day and time.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    meetings.forEachIndexed { index, meeting ->
+                        Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
+                            Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
+                                Row(verticalAlignment=Alignment.CenterVertically) {
+                                    OutlinedTextField(meeting.label,{v->meetings=meetings.toMutableList().also { it[index]=meeting.copy(label=v) }},modifier=Modifier.weight(1f),singleLine=true,label={Text("Meeting name")},shape=RoundedCornerShape(11.dp))
+                                    IconButton(onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(active=!meeting.active) }}) { Icon(MaterialSymbol(if(meeting.active)"archive" else "unarchive"),if(meeting.active)"Archive meeting" else "Restore meeting",tint=MaterialTheme.colorScheme.primary) }
+                                    IconButton(onClick={meetings=meetings.filterNot { it.id==meeting.id }}) { Icon(MaterialSymbol("delete"),"Delete meeting",tint=MaterialTheme.colorScheme.error) }
+                                }
+                                Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    var dayMenu by remember(meeting.id) { mutableStateOf(false) }
+                                    Box {
+                                        OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(dayName(meeting.dayOfWeek),fontSize=12.sp)}
+                                        DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}) { (1..7).forEach { d->DropdownMenuItem(text={Text(dayName(d))},onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(dayOfWeek=d) };dayMenu=false}) } }
+                                    }
+                                    TimeInput(meeting.time){ t->meetings=meetings.toMutableList().also { it[index]=meeting.copy(time=t) } }
+                                }
+                                Text("Eligible groups",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+                                    (1..groupCount).forEach { g ->
+                                        val enabled=g in meeting.eligibleGroups
+                                        FilterPill(g.toString(),enabled){ meetings=meetings.toMutableList().also { it[index]=meeting.copy(eligibleGroups=if(enabled)meeting.eligibleGroups-g else meeting.eligibleGroups+g) } }
+                                    }
+                                }
+                                if(!meeting.active) Text("Archived from future schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    OutlinedTextField(newMeeting,{newMeeting=it},modifier=Modifier.fillMaxWidth(),singleLine=true,label={Text("New meeting name")},shape=RoundedCornerShape(11.dp))
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        var dayMenu by remember { mutableStateOf(false) }
+                        Box {
+                            OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(if(selectedDay==0)"Choose day" else dayName(selectedDay))}
+                            DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}){(1..7).forEach{d->DropdownMenuItem(text={Text(dayName(d))},onClick={selectedDay=d;dayMenu=false})}}
+                        }
+                        if(newMeetingTime.isBlank()) {
+                            OutlinedButton(onClick={TimePickerDialog(context,{_,h,m->newMeetingTime="%02d:%02d".format(h,m)},9,0,false).show()},shape=RoundedCornerShape(10.dp)){Text("Choose time")}
+                        } else {
+                            TimeInput(newMeetingTime){newMeetingTime=it}
+                        }
+                        FilledTonalButton(enabled=newMeeting.trim().isNotBlank() && selectedDay in 1..7 && newMeetingTime.isNotBlank(),onClick={
+                            val label=newMeeting.trim()
+                            if(label.isNotBlank() && selectedDay in 1..7 && newMeetingTime.isNotBlank()) {
+                                meetings=meetings+LocalMeetingRule("meeting_${System.currentTimeMillis()}",label,selectedDay,newMeetingTime,(1..groupCount).toSet())
+                                newMeeting=""; selectedDay=0; newMeetingTime=""
+                            }
+                        },shape=RoundedCornerShape(11.dp)){Text("Add")}
+                    }
+                    error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=11.sp) }
+                    Text("Archived departments and removed meetings stop appearing in new schedules. Existing saved assignments remain in the local backup.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,lineHeight=15.sp)
+                }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=10.dp),horizontalArrangement=Arrangement.End,verticalAlignment=Alignment.CenterVertically) {
+                    TextButton(onClick=onDismiss){Text("Cancel")}
+                    Button(onClick={
+                        val normalized=departments.map { d-> d.copy(label=d.label.trim(),roles=d.roles.map { it.copy(label=it.label.trim()) }) }
+                        val cleanedMeetings=meetings.map { it.copy(label=it.label.trim(),eligibleGroups=it.eligibleGroups.filter { g->g in 1..groupCount }.toSet()) }
+                        val config=LocalWorkspaceConfig(groupCount,normalized,cleanedMeetings)
+                        when { normalized.any { it.label.isBlank() || it.roles.any { role->role.label.isBlank() } } || cleanedMeetings.any { it.label.isBlank() } -> error="Enter a name for every department, role, and meeting."; (groupCount>0 && cleanedMeetings.any { it.eligibleGroups.isEmpty() }) -> error="Choose at least one eligible group for each meeting."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
+                    },shape=RoundedCornerShape(12.dp)){Text("Save setup")}
+                }
+            }
+        }
+    }
+}
+
+private fun dayName(day: Int): String = when(day) { 1->"Monday";2->"Tuesday";3->"Wednesday";4->"Thursday";5->"Friday";6->"Saturday";7->"Sunday";else->"Day" }
 
 @Composable
 private fun GenerateDialogContent(onConfirm: () -> Unit) { Text("Review the generated draft before applying it.") }
@@ -1919,7 +2155,7 @@ private fun AssignmentPickerDialog(meeting:Meeting,slot:Slot,candidates:List<Per
             Column {
                 Row(Modifier.fillMaxWidth().padding(start=20.dp,end=12.dp,top=17.dp,bottom=13.dp),verticalAlignment=Alignment.CenterVertically){
                     Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol("users-round"),null,tint=MaterialTheme.colorScheme.primary)}
-                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingLabel(meeting.type)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
+                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
                     IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close",tint=MaterialTheme.colorScheme.onSurfaceVariant)}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
@@ -2120,15 +2356,30 @@ private fun slotIcon(slot: Slot): String = when (slot.department) {
     "av" -> if (slot.key.contains("video", ignoreCase = true) || slot.label.contains("video", ignoreCase = true)) "camera" else "audio-lines"
     else -> "podium"
 }
-private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturday"->"Saturday";else->"Sunday"}
+private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturday"->"Saturday";"sunday"->"Sunday";else->type.replace('_',' ').split(' ').joinToString(" "){it.replaceFirstChar(Char::uppercase)}}
+private fun meetingTitle(meeting: Meeting): String = meeting.displayLabel?.takeIf { it.isNotBlank() } ?: meetingLabel(meeting.type)
 private fun friendlyDate(date:String)=try{LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MMM d"))}catch(_:Exception){date}
 private fun prettyTime(time:String)=try{val parts=time.split(":");val h=parts[0].toInt();val m=parts.getOrElse(1){"00"};"${if(h%12==0)12 else h%12}:$m ${if(h<12)"AM" else "PM"}"}catch(_:Exception){time}
-private fun Person.eligibleSummary():String=buildList { if(mic)add("Mic");if(audio||video)add("Audio / Video");if(platform)add("Platform") }.joinToString(" · ").ifBlank { "No eligible assignments" }
+private fun Person.eligibleSummary(config:LocalWorkspaceConfig?=null):String {
+    val labels=if(config!=null) config.departments.filter { it.active }.mapNotNull { dept ->
+        // Keep renamed built-in roles compatible with both current and older person records.
+        val normalized=dept.label.trim().lowercase().replace("&","and").replace(Regex("[^a-z0-9]+")," ")
+        val standardEligible=when {
+            dept.id=="mic" || normalized in setOf("mic","mic men","microphone","microphones") -> mic
+            dept.id=="av" || normalized in setOf("audio video","audio and video","audio","video","audio operator","video operator") -> audio||video
+            dept.id=="attendant" || normalized in setOf("platform","platform operator") -> platform
+            else -> false
+        }
+        dept.label.takeIf { standardEligible || dept.id in customDepartmentIds }
+    } else buildList { if(mic)add("Mic Men");if(audio||video)add("Audio / Video");if(platform)add("Platform") }
+    return labels.distinct().joinToString(" · ").ifBlank { "No eligible assignments" }
+}
 private fun personEligible(person:Person,meeting:Meeting,slot:Slot):Boolean {
     if(person.status!="active") return false
-    val groupEligible = when(meeting.type){"thursday"->!person.noThursday;"saturday"->person.group in 5..9;else->person.group in 1..4}
+    if ((meeting.dayOfWeek == 4 || meeting.type=="thursday") && person.noThursday) return false
+    val groupEligible = meeting.eligibleGroups?.contains(person.group) ?: when(meeting.type){"thursday"->true;"saturday"->person.group in 5..9;"sunday"->person.group in 1..4;else->true}
     if(!groupEligible) return false
-    return when(slot.department){"mic"->person.mic;"av"->if(slot.key.contains("video"))person.video else person.audio;"attendant"->person.platform;else->false}
+    return when(slot.department){"mic"->person.mic;"av"->if(slot.key.contains("video"))person.video else person.audio;"attendant"->person.platform;else->slot.department in person.customDepartmentIds}
 }
 private fun shareText(context:android.content.Context,text:String){val intent=Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text);context.startActivity(Intent.createChooser(intent,"Share Schedule"))}
 
@@ -2215,6 +2466,11 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "groups", "users-round" -> Icons.TwoTone.Groups
     "bar_chart", "chart" -> Icons.TwoTone.BarChart
     "download", "file-down" -> Icons.TwoTone.Download
+    "archive" -> Icons.TwoTone.Archive
+    "unarchive" -> Icons.TwoTone.Unarchive
+    "add" -> Icons.TwoTone.Add
+    "database" -> Icons.TwoTone.Storage
+    "upload" -> Icons.TwoTone.Upload
     "tune", "settings", "settings-2", "sliders-horizontal" -> Icons.TwoTone.Tune
     "apartment", "building", "building-2" -> Icons.TwoTone.Apartment
     "person", "user-round" -> Icons.TwoTone.Person
