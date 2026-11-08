@@ -456,7 +456,7 @@ fun SchedulerApp() {
                             "Schedule Calendar" -> ScheduleCalendarScreen(store)
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
-                            "Reports" -> ReportsScreen(store.data.value)
+                            "Reports" -> ReportsScreen(store.data.value, if (store.localMode) store.localConfig.value else null)
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
@@ -465,7 +465,7 @@ fun SchedulerApp() {
                                 else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
                                     scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
                                 }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
-                            }, onConnectShared = { store.chooseSharedWorkspace(); store.user.value = null })
+                            })
                             else -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = MaterialTheme.colorScheme.primary)
@@ -530,7 +530,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
     var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
+        Text("JW Task Scheduler", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
         Text("Choose how your congregation stores its schedule", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp))
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1553,14 +1553,26 @@ private fun taskSlotLabel(key: String): String = when (key.removePrefix("dept:")
 }
 
 @Composable
-private fun ReportsScreen(data: ScheduleData?) {
+private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig? = null) {
     val meetings = data?.meetings.orEmpty(); val slots = meetings.flatMap { it.slots }; val filled = slots.count { it.name != null }
+    val departmentCoverage = if (localConfig != null) {
+        localConfig.departments.filter { it.active }.map { it.id to it.label }
+    } else {
+        slots.map { it.department }.distinct().map { id ->
+            id to when (id) { "mic" -> "Mic Men"; "av" -> "Audio / Video"; "attendant", "platform" -> "Platform"; else -> id.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase) }
+        }
+    }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("INSIGHTS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Reports", fontSize = 23.sp, fontWeight = FontWeight.Bold)
         Card(Modifier.padding(top = 14.dp), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("ROTATION", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp); Text("Schedule coverage", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)); Text("Current month", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Box(Modifier.size(70.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Text(if (slots.isEmpty()) "—" else "${filled*100/slots.size}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } } }
         Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricCard("${meetings.size}", "Meetings", Modifier.weight(1f)); MetricCard("$filled", "Filled", Modifier.weight(1f)); MetricCard("${(slots.size-filled).coerceAtLeast(0)}", "Vacant", Modifier.weight(1f)) }
-        Text("Department Coverage", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
-        listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "attendant").forEach { (label,id) -> val group=slots.filter { it.department==id }; RowCard("chart", label, "${group.count { it.name!=null }} of ${group.size} positions filled", "${group.size-group.count { it.name!=null }} vacant") {} }
+        if (departmentCoverage.isNotEmpty()) {
+            Text("Department Coverage", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
+            departmentCoverage.forEach { (id,label) ->
+                val group=slots.filter { it.department==id }
+                RowCard("chart", label, "${group.count { it.name!=null }} of ${group.size} positions filled", "${(group.size-group.count { it.name!=null }).coerceAtLeast(0)} vacant") {}
+            }
+        }
         Text("Full rotation fairness reports are available in the web workspace.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 14.dp))
     }
 }
@@ -1843,7 +1855,7 @@ private fun createPosterShareUri(context: android.content.Context, poster: Bitma
 }
 
 @Composable
-private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit, onConnectShared: () -> Unit) {
+private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf<String?>(null) }
     var name by remember(store.data.value?.settings?.name) { mutableStateOf(store.data.value?.settings?.name ?: "") }
     var thu by remember(store.data.value?.settings?.thursday) { mutableStateOf(store.data.value?.settings?.thursday ?: "18:00") }
@@ -1851,6 +1863,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
     var sun by remember(store.data.value?.settings?.sunday) { mutableStateOf(store.data.value?.settings?.sunday ?: "07:45") }
     val admin = store.user.value?.role == "admin"
     var localConfigDialog by remember { mutableStateOf(false) }
+    var sharedSyncInfo by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
         SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
@@ -1873,7 +1886,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 }
                 backup.lastSaved?.let { Text("Last saved: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
                 backup.error?.let { Text("Backup issue: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=4.dp)) }
-                TextButton(onClick=onConnectShared, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
+                TextButton(onClick={ sharedSyncInfo=true }, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
             } else {
                 Text("Optional sync is enabled for this shared workspace.", fontSize=11.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
             }
@@ -1943,6 +1956,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 Text("Built by: Charle Dave", fontSize = 11.sp, fontWeight = FontWeight.Medium)
             }
         }
+    }
+    if (sharedSyncInfo) {
+        AlertDialog(
+            onDismissRequest = { sharedSyncInfo = false },
+            title = { Text("Shared sync is planned") },
+            text = { Text("Your local workspace stays on this device. This button will not open the existing cloud login. A future setup can let the admin create a congregation sync space, invite other devices with a code or QR, and keep working offline while changes sync when connected.") },
+            confirmButton = { TextButton(onClick = { sharedSyncInfo = false }) { Text("Got it") } }
+        )
     }
     if (localConfigDialog && store.localMode && admin) LocalWorkspaceConfigDialog(
         initial = store.localConfig.value ?: LocalWorkspaceConfig(0, emptyList(), emptyList()),
