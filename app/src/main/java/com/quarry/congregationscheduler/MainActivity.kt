@@ -512,7 +512,6 @@ fun SchedulerApp() {
             confirmButton = { TextButton(onClick = { confirmDelete = null; scope.launch { try { store.deleteUser(account) } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not delete account") } } }) { Text("Delete", color=Color(0xFFB45148)) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         ) }
-    }
       }
     }
 }
