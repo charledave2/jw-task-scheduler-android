@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.38
+- Opened Schedule Calendar as a centered modal with safe-area spacing and scrolling on shorter screens.
+- Added safe drawing insets around the app so content avoids system bars.
+- Added a persistent app-wide text-size control in App Preferences.
+
 ## 1.0.37
 - Made the navigation drawer scrollable so all tools remain reachable in landscape and short-height screens.
 - Preserved the current screen and in-memory state when rotating the device, avoiding a splash-screen reload.
