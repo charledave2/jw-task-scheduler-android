@@ -1646,8 +1646,26 @@ private fun ExportScreen(store: AppStore) {
             if (!loadError.isNullOrBlank()) Text(loadError!!, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Preview", fontSize = 14.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Text("1080 px portrait", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Text("Pinch to zoom · ${((zoom * 100).toInt())}%", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Box(Modifier.fillMaxWidth().heightIn(max = 350.dp), contentAlignment = Alignment.Center) {
-                Image(poster.asImageBitmap(), contentDescription = "Schedule poster preview", modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp).graphicsLayer(scaleX = zoom, scaleY = zoom).transformable(transform), contentScale = ContentScale.Fit)
+            // Keep the poster inside a predictable viewport on short landscape screens.
+            // Pan gestures were previously consumed by transformable even though pan was ignored,
+            // preventing the surrounding page from receiving vertical scrolls.
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 150.dp, max = 300.dp)
+                    .clip(RoundedCornerShape(12.dp)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    poster.asImageBitmap(),
+                    contentDescription = "Schedule poster preview",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 300.dp)
+                        .graphicsLayer(scaleX = zoom, scaleY = zoom)
+                        .transformable(transform, panEnabled = false),
+                    contentScale = ContentScale.Fit
+                )
             }
         }
         Surface(tonalElevation = 2.dp, color = MaterialTheme.colorScheme.background) {
