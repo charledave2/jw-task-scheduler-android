@@ -32,7 +32,18 @@ class LocalWorkspaceStore(context: Context) {
         if (!has("settings")) put("settings", JSONObject().put("name", "My Congregation").put("thursday", "18:00").put("saturday", "15:30").put("sunday", "07:45"))
         if (!has("months")) put("months", JSONObject())
         if (!has("reviews")) put("reviews", JSONArray())
-        if (!has("localConfig")) put("localConfig", configJson(defaultConfig(optJSONObject("settings") ?: JSONObject())))
+        val settings=optJSONObject("settings") ?: JSONObject()
+        if (!has("localConfig")) put("localConfig", configJson(defaultConfig(settings)))
+        else {
+            val people=optJSONArray("people") ?: JSONArray()
+            val months=optJSONObject("months") ?: JSONObject()
+            val reviews=optJSONArray("reviews") ?: JSONArray()
+            val stored=optJSONObject("localConfig")
+            val hasSavedWork=people.length()>0 || months.keys().hasNext() || reviews.length()>0
+            if(!hasSavedWork && stored?.toString()==configJson(legacyDefaultConfig(settings)).toString()) {
+                put("localConfig",configJson(defaultConfig(settings)))
+            }
+        }
     }
 
     data class AutoBackupInfo(val enabled:Boolean, val folderName:String?, val lastSaved:String?, val error:String?)
@@ -141,7 +152,7 @@ class LocalWorkspaceStore(context: Context) {
     @Synchronized fun config():LocalWorkspaceConfig = parseConfig(root.optJSONObject("localConfig") ?: configJson(defaultConfig(root.optJSONObject("settings") ?: JSONObject())))
 
     @Synchronized fun saveConfig(value:LocalWorkspaceConfig) {
-        require(value.groupCount in 1..30) { "Choose between 1 and 30 groups." }
+        require(value.groupCount in 0..30) { "Choose between 0 and 30 groups." }
         require(people().none { it.group > value.groupCount }) { "Move personnel in groups above the new limit before reducing the group count." }
         require(value.departments.map { it.id }.distinct().size == value.departments.size) { "Department IDs must be unique." }
         require(value.meetings.map { it.id }.distinct().size == value.meetings.size) { "Meeting IDs must be unique." }
@@ -153,7 +164,9 @@ class LocalWorkspaceStore(context: Context) {
         root.put("settings",settings).put("localConfig",configJson(value)); save()
     }
 
-    private fun defaultConfig(settings:JSONObject):LocalWorkspaceConfig = LocalWorkspaceConfig(9, listOf(
+    private fun defaultConfig(settings:JSONObject):LocalWorkspaceConfig = LocalWorkspaceConfig(0, emptyList(), emptyList())
+
+    private fun legacyDefaultConfig(settings:JSONObject):LocalWorkspaceConfig = LocalWorkspaceConfig(9, listOf(
         LocalDepartment("mic","Mic Men",listOf(LocalAssignmentRole("main_mic_1","Main Mic 1"),LocalAssignmentRole("main_mic_2","Main Mic 2"),LocalAssignmentRole("backup_mic_1","Backup Mic 1",true),LocalAssignmentRole("backup_mic_2","Backup Mic 2",true))),
         LocalDepartment("av","Audio / Video",listOf(LocalAssignmentRole("audio_operator","Audio Operator"),LocalAssignmentRole("video_operator","Video Operator"),LocalAssignmentRole("backup_av_operator","Backup A/V Operator",true))),
         LocalDepartment("attendant","Platform",listOf(LocalAssignmentRole("attendant_1","Platform"),LocalAssignmentRole("backup_attendant","Platform Backup",true)))
