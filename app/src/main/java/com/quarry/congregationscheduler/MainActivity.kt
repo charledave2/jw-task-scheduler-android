@@ -843,19 +843,16 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     modalDate?.let { date ->
         val dayMeetings = meetingsByDate[date].orEmpty()
         Dialog(onDismissRequest = { modalDate = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.BottomCenter) {
+            BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f)).clickable { modalDate = null })
                 Card(
-                    Modifier.fillMaxWidth().fillMaxHeight(.78f),
-                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+                    Modifier.fillMaxWidth(.94f).heightIn(max = maxHeight * .92f),
+                    shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Column(Modifier.fillMaxSize()) {
-                        Box(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 12.dp), contentAlignment = Alignment.Center) {
-                            Box(Modifier.width(38.dp).height(4.dp).clip(CircleShape).background(MaterialTheme.colorScheme.outlineVariant))
-                        }
-                        Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 9.dp, bottom = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 12.dp, end = 9.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 18.sp, fontWeight = FontWeight.Bold)
                                 Text("${dayMeetings.size} ${if (dayMeetings.size == 1) "meeting" else "meetings"} scheduled", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
@@ -863,14 +860,16 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                             IconButton(onClick = { modalDate = null }) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.fillMaxWidth().heightIn(max = maxHeight * .72f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             dayMeetings.forEach { meeting ->
+                                val meetingDay = LocalDate.parse(meeting.date).dayOfWeek.value
+                                val (meetingAccent, meetingContainer) = dayPalette(meetingDay)
                                 Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                                     Column {
-                                        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                                        Row(Modifier.fillMaxWidth().background(meetingContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(MaterialSymbol("calendar-days"), null, tint = meetingAccent, modifier = Modifier.size(18.dp))
                                             Column(Modifier.weight(1f).padding(start = 9.dp)) {
-                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = meetingAccent)
                                                 Text(prettyTime(meeting.time), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                             }
                                         }
@@ -892,6 +891,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                 }
                             }
                         }
+                        TextButton(onClick = { modalDate = null }, modifier = Modifier.align(Alignment.End).padding(end = 12.dp)) { Text("Close") }
                     }
                 }
             }
