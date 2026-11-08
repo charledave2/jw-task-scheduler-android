@@ -104,6 +104,7 @@ class LocalWorkspaceStore(context: Context) {
         val treeUri=backupPreferences.getString("tree_uri",null)?.let(Uri::parse) ?: error("Choose a backup folder first.")
         val fileName="JW-Task-Scheduler-Auto.bcdv"
         val treeId=DocumentsContract.getTreeDocumentId(treeUri)
+        val rootDocumentUri=DocumentsContract.buildDocumentUriUsingTree(treeUri,treeId)
         val childrenUri=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,treeId)
         var target:Uri?=null
         resolver.query(childrenUri,arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use { cursor ->
@@ -116,7 +117,7 @@ class LocalWorkspaceStore(context: Context) {
                 }
             }
         }
-        val backupUri=target ?: DocumentsContract.createDocument(resolver,treeUri,"application/octet-stream",fileName)
+        val backupUri=target ?: DocumentsContract.createDocument(resolver,rootDocumentUri,"application/octet-stream",fileName)
             ?: error("Could not create the .bcdv backup file in the selected folder.")
         val snapshot=JSONObject(root.toString()).put("backupMetadata",JSONObject()
             .put("format","JW Task Scheduler Device Backup")
