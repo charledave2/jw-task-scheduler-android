@@ -2356,12 +2356,6 @@ private fun Person.eligibleSummary(config:LocalWorkspaceConfig?=null):String {
     } else buildList { if(mic)add("Mic Men");if(audio||video)add("Audio / Video");if(platform)add("Platform") }
     return labels.distinct().joinToString(" · ").ifBlank { "No eligible assignments" }
 }
-    val labels=if(config!=null) config.departments.filter { it.active }.mapNotNull { dept ->
-        val eligible=when(dept.id) { "mic"->mic; "av"->audio||video; "attendant"->platform; else->dept.id in customDepartmentIds }
-        dept.label.takeIf { eligible }
-    } else buildList { if(mic)add("Mic Men");if(audio)add("Audio");if(video)add("Video");if(platform)add("Platform") }
-    return labels.distinct().joinToString(" · ").ifBlank { "No eligible assignments" }
-}
 private fun personEligible(person:Person,meeting:Meeting,slot:Slot):Boolean {
     if(person.status!="active") return false
     if (meeting.type=="thursday" && person.noThursday) return false
