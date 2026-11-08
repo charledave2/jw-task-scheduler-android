@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -1592,6 +1593,7 @@ private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ExportScreen(store: AppStore) {
     val context = LocalContext.current
