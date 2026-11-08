@@ -1901,8 +1901,8 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
 @Composable
 private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss: () -> Unit, onSave: (LocalWorkspaceConfig) -> Unit) {
     var groupCount by remember(initial) { mutableIntStateOf(initial.groupCount) }
-    var departments by remember(initial) { mutableStateOf(initial.departments.toMutableList()) }
-    var meetings by remember(initial) { mutableStateOf(initial.meetings.toMutableList()) }
+    var departments by remember(initial) { mutableStateOf<List<LocalDepartment>>(initial.departments) }
+    var meetings by remember(initial) { mutableStateOf<List<LocalMeetingRule>>(initial.meetings) }
     var error by remember { mutableStateOf<String?>(null) }
     var newDepartment by remember { mutableStateOf("") }
     var newMeeting by remember { mutableStateOf("") }
@@ -1993,7 +1993,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                         val normalized=departments.map { d-> d.copy(label=d.label.trim(),roles=d.roles.map { it.copy(label=it.label.trim()) }) }
                         val cleanedMeetings=meetings.map { it.copy(label=it.label.trim(),eligibleGroups=it.eligibleGroups.filter { g->g in 1..groupCount }.toSet()) }
                         val config=LocalWorkspaceConfig(groupCount,normalized,cleanedMeetings)
-                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; cleanedMeetings.any { it.eligibleGroups.isEmpty() } -> error="Each meeting needs at least one eligible group."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." }
+                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; cleanedMeetings.any { it.eligibleGroups.isEmpty() } -> error="Each meeting needs at least one eligible group."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
                     },shape=RoundedCornerShape(12.dp)){Text("Save setup")}
                 }
             }
