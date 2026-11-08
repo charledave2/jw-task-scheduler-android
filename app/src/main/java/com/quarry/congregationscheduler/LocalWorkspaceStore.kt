@@ -7,7 +7,7 @@ import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.YearMonth
 
-data class LocalAssignmentRole(val id:String, val label:String, val backup:Boolean=false)
+data class LocalAssignmentRole(val id:String, val label:String, val backup:Boolean=false, val active:Boolean=true)
 data class LocalDepartment(val id:String, val label:String, val roles:List<LocalAssignmentRole>, val active:Boolean=true)
 data class LocalMeetingRule(val id:String, val label:String, val dayOfWeek:Int, val time:String, val eligibleGroups:Set<Int>, val active:Boolean=true)
 data class LocalWorkspaceConfig(val groupCount:Int, val departments:List<LocalDepartment>, val meetings:List<LocalMeetingRule>)
@@ -48,14 +48,14 @@ class LocalWorkspaceStore(context: Context) {
 
     @Synchronized fun saveConfig(value:LocalWorkspaceConfig) {
         require(value.groupCount in 1..30) { "Choose between 1 and 30 groups." }
+        require(people().none { it.group > value.groupCount }) { "Move personnel in groups above the new limit before reducing the group count." }
         require(value.departments.map { it.id }.distinct().size == value.departments.size) { "Department IDs must be unique." }
         require(value.meetings.map { it.id }.distinct().size == value.meetings.size) { "Meeting IDs must be unique." }
         require(value.meetings.all { it.dayOfWeek in 1..7 }) { "Meeting day is invalid." }
         val settings=root.optJSONObject("settings") ?: JSONObject()
-        val times=value.meetings.associateBy { it.id }
-        settings.put("thursday",times["thursday"]?.time ?: settings.optString("thursday","18:00"))
-        settings.put("saturday",times["saturday"]?.time ?: settings.optString("saturday","15:30"))
-        settings.put("sunday",times["sunday"]?.time ?: settings.optString("sunday","07:45"))
+        value.meetings.firstOrNull { it.active && it.dayOfWeek==DayOfWeek.THURSDAY.value }?.let { settings.put("thursday",it.time) }
+        value.meetings.firstOrNull { it.active && it.dayOfWeek==DayOfWeek.SATURDAY.value }?.let { settings.put("saturday",it.time) }
+        value.meetings.firstOrNull { it.active && it.dayOfWeek==DayOfWeek.SUNDAY.value }?.let { settings.put("sunday",it.time) }
         root.put("settings",settings).put("localConfig",configJson(value)); save()
     }
 
@@ -69,11 +69,11 @@ class LocalWorkspaceStore(context: Context) {
         LocalMeetingRule("sunday","Sunday",DayOfWeek.SUNDAY.value,settings.optString("sunday","07:45"),(1..4).toSet())
     ))
     private fun configJson(config:LocalWorkspaceConfig)=JSONObject().put("groupCount",config.groupCount)
-        .put("departments",JSONArray(config.departments.map { d -> JSONObject().put("id",d.id).put("label",d.label).put("active",d.active).put("roles",JSONArray(d.roles.map { JSONObject().put("id",it.id).put("label",it.label).put("backup",it.backup) })) }))
+        .put("departments",JSONArray(config.departments.map { d -> JSONObject().put("id",d.id).put("label",d.label).put("active",d.active).put("roles",JSONArray(d.roles.map { JSONObject().put("id",it.id).put("label",it.label).put("backup",it.backup).put("active",it.active) })) }))
         .put("meetings",JSONArray(config.meetings.map { m -> JSONObject().put("id",m.id).put("label",m.label).put("dayOfWeek",m.dayOfWeek).put("time",m.time).put("active",m.active).put("eligibleGroups",JSONArray(m.eligibleGroups.sorted())) }))
     private fun parseConfig(json:JSONObject):LocalWorkspaceConfig {
         val deptJson=json.optJSONArray("departments")?:JSONArray(); val meetingJson=json.optJSONArray("meetings")?:JSONArray()
-        val depts=(0 until deptJson.length()).map { i -> deptJson.getJSONObject(i).let { d -> val roles=d.optJSONArray("roles")?:JSONArray(); LocalDepartment(d.optString("id"),d.optString("label"), (0 until roles.length()).map { n -> roles.getJSONObject(n).let { LocalAssignmentRole(it.optString("id"),it.optString("label"),it.optBoolean("backup")) } },d.optBoolean("active",true)) } }
+        val depts=(0 until deptJson.length()).map { i -> deptJson.getJSONObject(i).let { d -> val roles=d.optJSONArray("roles")?:JSONArray(); LocalDepartment(d.optString("id"),d.optString("label"), (0 until roles.length()).map { n -> roles.getJSONObject(n).let { LocalAssignmentRole(it.optString("id"),it.optString("label"),it.optBoolean("backup"),it.optBoolean("active",true)) } },d.optBoolean("active",true)) } }
         val meetings=(0 until meetingJson.length()).map { i -> meetingJson.getJSONObject(i).let { m -> val groups=m.optJSONArray("eligibleGroups")?:JSONArray(); LocalMeetingRule(m.optString("id"),m.optString("label"),m.optInt("dayOfWeek",1),m.optString("time","09:00"),(0 until groups.length()).map { groups.optInt(it) }.toSet(),m.optBoolean("active",true)) } }
         return LocalWorkspaceConfig(json.optInt("groupCount",9).coerceIn(1,30),depts,meetings)
     }
@@ -88,12 +88,19 @@ class LocalWorkspaceStore(context: Context) {
         val meetings = mutableListOf<Meeting>()
         var day = month.atDay(1)
         while (day.month == month.month) {
-            setup.meetings.filter { it.active && it.dayOfWeek==day.dayOfWeek.value }.forEach { rule ->
+            val activeRules=setup.meetings.filter { it.active && it.dayOfWeek==day.dayOfWeek.value }
+            val archivedHistoricalRules=if(day.isBefore(LocalDate.now())) savedByDate.keys.mapNotNull { key ->
+                val parts=key.split("|",limit=2); if(parts.firstOrNull()!=day.toString()) null else setup.meetings.firstOrNull { it.id==parts.getOrNull(1) && !it.active }
+            } else emptyList()
+            (activeRules+archivedHistoricalRules).distinctBy { it.id }.forEach { rule ->
                 val old = savedByDate["${day}|${rule.id}"]
                 val time = old?.optString("time")?.takeIf(String::isNotBlank) ?: rule.time
-                val roles=setup.departments.filter { it.active }.flatMap { dept -> dept.roles.map { role ->
+                val roles=setup.departments.flatMap { dept ->
+                    val isArchivedHistorical= !dept.active && day.isBefore(LocalDate.now()) && old?.optJSONArray("slots")?.let { slots -> (0 until it.length()).any { i -> slots.optJSONObject(i)?.optString("key")?.startsWith(if(dept.id=="mic") "" else "dept:${dept.id}_")==true } }==true
+                    if(!dept.active && !isArchivedHistorical) emptyList() else dept.roles.mapNotNull { role ->
                     val key=if(dept.id=="mic") role.id else "dept:${dept.id}_${role.id}"
-                    Triple(key,role.label,dept to role)
+                    val isArchivedRoleHistorical = !role.active && day.isBefore(LocalDate.now()) && old?.optJSONArray("slots")?.let { slots -> (0 until slots.length()).any { i -> slots.optJSONObject(i)?.optString("key")==key } }==true
+                    if(!role.active && !isArchivedRoleHistorical) null else Triple(key,role.label,dept to role)
                 } }
                 val stored = old?.optJSONArray("slots") ?: JSONArray()
                 val byKey = (0 until stored.length()).associate { stored.getJSONObject(it).optString("key") to stored.getJSONObject(it) }
@@ -119,8 +126,12 @@ class LocalWorkspaceStore(context: Context) {
     }
     @Synchronized fun deletePerson(id:String) { val a=root.getJSONArray("people"); root.put("people",JSONArray((0 until a.length()).map { a.getJSONObject(it) }.filterNot { it.optString("id")==id })); save() }
     @Synchronized fun settings(value:WorkspaceSettings) {
-        root.put("settings",JSONObject().put("name",value.name).put("thursday",value.thursday).put("saturday",value.saturday).put("sunday",value.sunday))
-        val current=config(); saveConfig(current.copy(meetings=current.meetings.map { rule -> when(rule.id) { "thursday" -> rule.copy(time=value.thursday); "saturday" -> rule.copy(time=value.saturday); "sunday" -> rule.copy(time=value.sunday); else -> rule } }))
+        val settings=root.optJSONObject("settings") ?: JSONObject()
+        settings.put("name",value.name).put("thursday",value.thursday).put("saturday",value.saturday).put("sunday",value.sunday)
+        root.put("settings",settings)
+        val current=config(); val times=mapOf(DayOfWeek.THURSDAY.value to value.thursday, DayOfWeek.SATURDAY.value to value.saturday, DayOfWeek.SUNDAY.value to value.sunday)
+        val meetings=current.meetings.map { rule -> rule.copy(time=times[rule.dayOfWeek] ?: rule.time) }
+        root.put("localConfig",configJson(current.copy(meetings=meetings))); save()
     }
     @Synchronized fun review(review:TaskReview) { val a=root.getJSONArray("reviews"); val rows=(0 until a.length()).map { a.getJSONObject(it) }.filterNot { it.optString("date")==review.date && it.optString("slotKey")==review.slotKey && it.optString("personId")==review.personId }.toMutableList(); rows += JSONObject().put("date",review.date).put("type",review.type).put("department",review.department).put("slotKey",review.slotKey).put("personId",review.personId).put("personName",review.personName).put("status",review.status).put("note",review.note); root.put("reviews",JSONArray(rows)); save() }
     @Synchronized fun reviews(month:YearMonth):List<TaskReview> { val a=root.getJSONArray("reviews"); return (0 until a.length()).map { a.getJSONObject(it) }.filter { it.optString("date").startsWith(month.toString()) }.map { TaskReview(it.optString("date"),it.optString("type"),it.optString("department"),it.optString("slotKey"),it.optString("personId"),it.optString("personName"),it.optString("status"),it.optString("note")) } }
