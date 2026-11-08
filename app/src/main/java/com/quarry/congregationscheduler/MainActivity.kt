@@ -363,7 +363,8 @@ fun SchedulerApp() {
         secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
         tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
         tertiaryContainer = Color(0xFF384437), onTertiaryContainer = Color(0xFFDDE8D4),
-        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8)
+        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8),
+        inverseSurface = Color(0xFFE8E9E1), inverseOnSurface = Color(0xFF20231E), inversePrimary = Color(0xFF5C745F)
     ) else lightColorScheme(
         primary = Color(0xFF5C745F), onPrimary = Color.White, background = Color(0xFFF6F6F3),
         primaryContainer = Color(0xFFDCE8D8), onPrimaryContainer = Color(0xFF1D3021),
@@ -372,7 +373,8 @@ fun SchedulerApp() {
         outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
         onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
         tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
-        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F)
+        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F),
+        inverseSurface = Color(0xFF303B30), inverseOnSurface = Color(0xFFF6F6F3), inversePrimary = Color(0xFFA9C6A8)
     )
     MaterialTheme(colorScheme = colors) {
         SideEffect {
@@ -1056,7 +1058,7 @@ private fun PeopleScreen(store: AppStore) {
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
             items(shown, key = { it.id }) { person ->
-                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(), photoName = person.name, photo = store.personPhotos.value[person.id]) {
+                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(if(store.localMode) store.localConfig.value else null), photoName = person.name, photo = store.personPhotos.value[person.id]) {
                     if (admin) { editingPerson = person; editorOpen = true }
                 }
             }
@@ -1586,7 +1588,9 @@ private fun ExportScreen(store: AppStore) {
         date != null && date in chosenWeek.first..chosenWeek.second && YearMonth.from(date) == month
     }.sortedBy { it.date }
     val period = "${chosenWeek.first.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))} – ${chosenWeek.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
-    val poster = remember(exportData, selectedMeetings, period) { renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period) }
+    val posterDepartments = if(store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
+        else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
+    val poster = remember(exportData, selectedMeetings, period, posterDepartments) { renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period, posterDepartments) }
     val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -1733,7 +1737,7 @@ private fun firstExportWeek(month: YearMonth): LocalDate {
     return first.minusDays((first.dayOfWeek.value - 1).toLong())
 }
 
-private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, period: String): Bitmap {
+private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, period: String, departments: List<Pair<String,String>>): Bitmap {
     val width = 1080
     val margin = 62f
     val headerHeight = 295f
@@ -1751,10 +1755,15 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
     val ink = android.graphics.Color.rgb(39, 38, 32)
     val muted = android.graphics.Color.rgb(105, 100, 85)
     val border = android.graphics.Color.rgb(207, 199, 174)
-    val teal = android.graphics.Color.rgb(43, 108, 99)
-    val sage = android.graphics.Color.rgb(75, 103, 78)
-    val gold = android.graphics.Color.rgb(156, 126, 52)
-    val dayColors = mapOf("thursday" to teal, "saturday" to sage, "sunday" to gold)
+    val dayColors = mapOf(
+        1 to android.graphics.Color.rgb(57, 104, 137),   // Monday · blue
+        2 to android.graphics.Color.rgb(163, 83, 61),   // Tuesday · terracotta
+        3 to android.graphics.Color.rgb(46, 113, 102),  // Wednesday · teal
+        4 to android.graphics.Color.rgb(75, 103, 78),   // Thursday · sage
+        5 to android.graphics.Color.rgb(111, 101, 49),  // Friday · olive
+        6 to android.graphics.Color.rgb(157, 112, 56),  // Saturday · amber
+        7 to android.graphics.Color.rgb(156, 126, 52)   // Sunday · ochre
+    )
     canvas.drawColor(cream)
     fun p(color: Int, size: Float, bold: Boolean = false) = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = size; typeface = android.graphics.Typeface.create("sans-serif${if (bold) "-medium" else ""}", if (bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL) }
     val kicker = p(muted, 22f, true); kicker.letterSpacing = .12f
@@ -1778,24 +1787,24 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         val cardRect = android.graphics.RectF(margin, y, width - margin, y + cardHeight)
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cream })
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = 4f })
-        val band = dayColors[meeting.type] ?: teal
+        val dayIndex=runCatching { LocalDate.parse(meeting.date).dayOfWeek.value }.getOrDefault(4)
+        val band = dayColors[dayIndex] ?: android.graphics.Color.rgb(75, 103, 78)
         canvas.drawRect(margin + 3f, y + 3f, width - margin - 3f, y + cardHeader, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = band })
         canvas.drawText("${meetingTitle(meeting).uppercase()} MEETING", margin + 22f, y + 47f, header)
         val meetingDate = runCatching { LocalDate.parse(meeting.date).format(DateTimeFormatter.ofPattern("MMM d, yyyy")) }.getOrDefault(meeting.date)
         val meta = "$meetingDate · ${prettyTime(meeting.time)}"
         val metaWidth = date.measureText(meta)
         canvas.drawText(meta, width - margin - 22f - metaWidth, y + 46f, date)
-        val labels = listOf("MIC MEN", "AUDIO / VIDEO", "PLATFORM")
-        val columns = 3
+        val columns=departments.ifEmpty { listOf("none" to "No departments configured") }
         val innerLeft = margin + 24f
         val innerRight = width - margin - 24f
-        val colWidth = (innerRight - innerLeft) / columns
-        labels.forEachIndexed { index, label ->
+        val colWidth = (innerRight - innerLeft) / columns.size
+        columns.forEachIndexed { index, (deptId, departmentLabel) ->
             val left = innerLeft + index * colWidth
             if (index > 0) canvas.drawLine(left - 16f, y + cardHeader + 24f, left - 16f, y + cardHeight - 24f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; strokeWidth = 3f })
+            val label=departmentLabel.uppercase().take(22)
             canvas.drawText(label, left, y + cardHeader + 42f, deptTitle)
-            val dept = when (label) { "MIC MEN" -> "mic"; "AUDIO / VIDEO" -> "av"; else -> "attendant" }
-            val columnSlots = meeting.slots.filter { it.department == dept }
+            val columnSlots = meeting.slots.filter { it.department == deptId }
             columnSlots.forEachIndexed { slotIndex, slot ->
                 val slotY = y + cardHeader + 80f + slotIndex * slotHeight
                 val role = slot.label.uppercase().take(28)
@@ -2320,7 +2329,13 @@ private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturda
 private fun meetingTitle(meeting: Meeting): String = meeting.displayLabel?.takeIf { it.isNotBlank() } ?: meetingLabel(meeting.type)
 private fun friendlyDate(date:String)=try{LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MMM d"))}catch(_:Exception){date}
 private fun prettyTime(time:String)=try{val parts=time.split(":");val h=parts[0].toInt();val m=parts.getOrElse(1){"00"};"${if(h%12==0)12 else h%12}:$m ${if(h<12)"AM" else "PM"}"}catch(_:Exception){time}
-private fun Person.eligibleSummary():String=buildList { if(mic)add("Mic");if(audio||video)add("Audio / Video");if(platform)add("Platform") }.joinToString(" · ").ifBlank { "No eligible assignments" }
+private fun Person.eligibleSummary(config:LocalWorkspaceConfig?=null):String {
+    val labels=if(config!=null) config.departments.filter { it.active }.mapNotNull { dept ->
+        val eligible=when(dept.id) { "mic"->mic; "av"->audio||video; "attendant"->platform; else->dept.id in customDepartmentIds }
+        dept.label.takeIf { eligible }
+    } else buildList { if(mic)add("Mic Men");if(audio)add("Audio");if(video)add("Video");if(platform)add("Platform") }
+    return labels.distinct().joinToString(" · ").ifBlank { "No eligible assignments" }
+}
 private fun personEligible(person:Person,meeting:Meeting,slot:Slot):Boolean {
     if(person.status!="active") return false
     if (meeting.type=="thursday" && person.noThursday) return false
@@ -2413,6 +2428,11 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "groups", "users-round" -> Icons.TwoTone.Groups
     "bar_chart", "chart" -> Icons.TwoTone.BarChart
     "download", "file-down" -> Icons.TwoTone.Download
+    "archive" -> Icons.TwoTone.Archive
+    "unarchive" -> Icons.TwoTone.Unarchive
+    "add" -> Icons.TwoTone.Add
+    "database" -> Icons.TwoTone.Storage
+    "upload" -> Icons.TwoTone.Upload
     "tune", "settings", "settings-2", "sliders-horizontal" -> Icons.TwoTone.Tune
     "apartment", "building", "building-2" -> Icons.TwoTone.Apartment
     "person", "user-round" -> Icons.TwoTone.Person
