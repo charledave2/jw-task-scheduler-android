@@ -48,6 +48,9 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
+import kotlin.math.roundToInt
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -99,6 +102,7 @@ class AppStore(context: android.content.Context) {
     val page = mutableStateOf("Home")
     val month = mutableStateOf(YearMonth.now())
     val dark = mutableStateOf(preferences.getBoolean("dark_appearance", false))
+    val fontScale = mutableFloatStateOf(preferences.getFloat("font_scale", 1f))
     val offline = mutableStateOf(true)
     val avatar = mutableStateOf<ImageBitmap?>(null)
     val personPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
@@ -294,6 +298,7 @@ class AppStore(context: android.content.Context) {
         scaled.recycle()
         throw IllegalArgumentException("Could not prepare that photo.")
     }
+    fun setFontScale(value: Float) { val next = value.coerceIn(.85f, 1.30f); fontScale.value = next; preferences.edit().putFloat("font_scale", next).apply() }
     fun setDarkAppearance(enabled: Boolean) {
         dark.value = enabled
         preferences.edit().putBoolean("dark_appearance", enabled).apply()
@@ -337,6 +342,7 @@ fun SchedulerApp() {
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    var calendarOpen by remember { mutableStateOf(false) }
     val openCalendar: (LocalDate?) -> Unit = { requestedDate ->
         scope.launch {
             val date = requestedDate ?: LocalDate.now()
@@ -344,7 +350,7 @@ fun SchedulerApp() {
             if (store.month.value != requestedMonth) runCatching { store.changeMonth(requestedMonth) }
             store.calendarRequestedDate.value = date
             store.calendarShouldOpenDate.value = requestedDate != null
-            store.page.value = "Schedule Calendar"
+            calendarOpen = true
         }
     }
     LaunchedEffect(Unit) {
@@ -380,6 +386,8 @@ fun SchedulerApp() {
         inverseSurface = Color(0xFF303B30), inverseOnSurface = Color(0xFFF6F6F3), inversePrimary = Color(0xFFA9C6A8)
     )
     MaterialTheme(colorScheme = colors) {
+      val baseDensity = LocalDensity.current
+      CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * store.fontScale.value)) {
         SideEffect {
             (context as? android.app.Activity)?.window?.let { window ->
                 val bar = if (store.dark.value) android.graphics.Color.rgb(21, 23, 19) else android.graphics.Color.rgb(246, 246, 243)
@@ -396,11 +404,15 @@ fun SchedulerApp() {
             LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
             ModalNavigationDrawer(
+                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
                 drawerState = drawerState,
                 gesturesEnabled = true,
                 drawerContent = {
                     ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(310.dp), drawerContainerColor = MaterialTheme.colorScheme.surface) {
-                        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+                        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+      BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
+       Surface(Modifier.fillMaxWidth(.96f).heightIn(max = maxHeight * .96f).padding(horizontal = 10.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 12.dp)) {
                                 Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
                                 Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 15.sp); Text(store.data.value?.settings?.name ?: "Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
@@ -462,7 +474,7 @@ fun SchedulerApp() {
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (page) {
                             "Home" -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
-                            "Schedule Calendar" -> ScheduleCalendarScreen(store)
+                            "Schedule Calendar" -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
@@ -481,6 +493,7 @@ fun SchedulerApp() {
                     }
                 }
             }
+            if (calendarOpen) ScheduleCalendarDialog(store, onDismiss = { calendarOpen = false })
         }
 
         if (assignmentTarget != null) {
@@ -503,6 +516,7 @@ fun SchedulerApp() {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         ) }
     }
+      }
 }
 
 @Composable
@@ -719,7 +733,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
 }
 
 @Composable
-private fun ScheduleCalendarScreen(store: AppStore) {
+private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
     val month = store.month.value
     val meetings = store.data.value?.meetings.orEmpty().filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
     val meetingsByDate = remember(meetings) { meetings.groupBy { LocalDate.parse(it.date) } }
@@ -756,6 +770,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                 IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
                 Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
+                IconButton(onClick = onDismiss) { Icon(MaterialSymbol("close"), "Close calendar") }
             }
         }
         Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
@@ -815,6 +830,9 @@ private fun ScheduleCalendarScreen(store: AppStore) {
             Text("Choose a date. Meeting dates are marked in green.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (store.loading.value) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
+    }
+       }
+      }
     }
 
     modalDate?.let { date ->
@@ -1935,10 +1953,18 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 }
             }
         }
-        SettingSection("App Preferences", "Appearance · Offline Access · About", "sliders-horizontal", expanded=="prefs", { expanded=if(expanded=="prefs")null else "prefs" }) {
+        SettingSection("App Preferences", "Appearance · Text size · Offline Access · About", "sliders-horizontal", expanded=="prefs", { expanded=if(expanded=="prefs")null else "prefs" }) {
             PreferenceRow(icon = if (store.dark.value) "moon" else "sun", title = "Dark appearance", subtitle = if (store.dark.value) "On · Easier viewing in low light" else "Off · Using light colors") {
                 Switch(checked = store.dark.value, onCheckedChange = { store.setDarkAppearance(it) }, colors = appSwitchColors())
             }
+            HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
+            Text("App text size · ${(store.fontScale.value * 100).roundToInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { store.setFontScale(store.fontScale.value - .05f) }, enabled = store.fontScale.value > .85f) { Text("A−", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+                Slider(value = store.fontScale.value, onValueChange = store::setFontScale, valueRange = .85f..1.30f, steps = 8, modifier = Modifier.weight(1f))
+                IconButton(onClick = { store.setFontScale(store.fontScale.value + .05f) }, enabled = store.fontScale.value < 1.30f) { Text("A+", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
+            }
+            Text("Adjusts text throughout the app.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
             PreferenceRow(icon = "wifi-off", title = "Offline schedule access", subtitle = if (store.offline.value) "Available without a connection" else "Use the latest online schedule") {
                 Switch(checked = store.offline.value, onCheckedChange = { store.offline.value = it }, colors = appSwitchColors())
