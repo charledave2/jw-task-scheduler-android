@@ -105,7 +105,7 @@ class LocalWorkspaceStore(context: Context) {
                 val stored = old?.optJSONArray("slots") ?: JSONArray()
                 val byKey = (0 until stored.length()).associate { stored.getJSONObject(it).optString("key") to stored.getJSONObject(it) }
                 val slotList = roles.map { (key,label,pair) -> val (dept,role)=pair; val s=byKey[key]; Slot(key,label,s?.optString("personId")?.takeIf { it.isNotBlank() && it!="null" },s?.optString("name")?.takeIf { it.isNotBlank() && it!="null" },dept.id,role.backup,s?.optBoolean("locked")?:false) }
-                meetings += Meeting(day.toString(),rule.id,time,slotList,null,rule.eligibleGroups.filter { it in 1..setup.groupCount }.toSet())
+                meetings += Meeting(day.toString(),rule.id,time,slotList,null,rule.eligibleGroups.filter { it in 1..setup.groupCount }.toSet(),rule.label)
             }
             day=day.plusDays(1)
         }
