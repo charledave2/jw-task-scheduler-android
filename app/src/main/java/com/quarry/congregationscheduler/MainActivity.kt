@@ -106,6 +106,7 @@ class AppStore(context: android.content.Context) {
     val calendarShouldOpenDate = mutableStateOf(false)
     val mode = mutableStateOf(preferences.getString("workspace_mode", null))
     val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
+    val autoBackup = mutableStateOf(local.autoBackupInfo())
     val localMode get() = mode.value == "local"
 
     fun createLocalWorkspace(name: String) {
@@ -116,10 +117,13 @@ class AppStore(context: android.content.Context) {
     }
     fun exportLocalBackup(): String = local.export()
     fun importLocalBackup(content: String) = local.import(content)
+    fun configureAutoBackupFolder(uri: Uri): String = local.configureAutoBackupFolder(uri).also { autoBackup.value = local.autoBackupInfo() }
+    fun setAutoBackupEnabled(enabled: Boolean) { local.setAutoBackupEnabled(enabled); autoBackup.value = local.autoBackupInfo() }
+    fun refreshAutoBackupInfo() { autoBackup.value = local.autoBackupInfo() }
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
     fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
-    fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config }
+    fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config; refreshAutoBackupInfo() }
 
     suspend fun initialize() {
         loading.value = true
@@ -151,7 +155,7 @@ class AppStore(context: android.content.Context) {
         error.value = null
         try {
             data.value = if (localMode) local.schedule(month.value) else api.loadSchedule(month.value)
-            if (localMode) localConfig.value = local.config()
+            if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo() }
             // Keep schedules usable while the Cloudflare migration/API update is being deployed.
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
@@ -159,7 +163,7 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String) {
         val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", status)
-        if (localMode) local.review(review) else api.saveTaskReview(meeting, slot, status)
+        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status)
         allTaskReviews.value = null
         val reviewedMonth = YearMonth.from(LocalDate.parse(meeting.date))
         taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) local.reviews(reviewedMonth) else api.loadTaskReviews(reviewedMonth)
@@ -313,11 +317,20 @@ fun SchedulerApp() {
     var snack by remember { mutableStateOf<String?>(null) }
     val snackbar = remember { SnackbarHostState() }
     var showSplash by remember { mutableStateOf(true) }
-    val backupWriter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val backupWriter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null) scope.launch { runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportLocalBackup()) } ?: error("Could not write backup file.") }.onSuccess { snackbar.showSnackbar("Backup saved.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not save backup.") } }
     }
     val backupReader = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch { runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read backup file.") }.onSuccess { content -> runCatching { store.importLocalBackup(content); store.load() }.onSuccess { snackbar.showSnackbar("Backup restored.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not restore backup.") } }.onFailure { snackbar.showSnackbar(it.message ?: "Could not read backup.") } }
+    }
+    val autoBackupFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+                store.configureAutoBackupFolder(uri)
+            }.onSuccess { folder -> snackbar.showSnackbar("Automatic backup enabled · $folder · .bcdv") }
+                .onFailure { snackbar.showSnackbar(it.message ?: "Could not enable automatic backup.") }
+        }
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -445,7 +458,12 @@ fun SchedulerApp() {
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
-                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.json") }, onRestore = { backupReader.launch(arrayOf("application/json", "text/json", "text/plain")) }, onConnectShared = { store.chooseSharedWorkspace(); store.user.value = null })
+                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
+                                if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
+                                else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
+                                    scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
+                                }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
+                            }, onConnectShared = { store.chooseSharedWorkspace(); store.user.value = null })
                             else -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = MaterialTheme.colorScheme.primary)
@@ -1799,7 +1817,7 @@ private fun createPosterShareUri(context: android.content.Context, poster: Bitma
 }
 
 @Composable
-private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onConnectShared: () -> Unit) {
+private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit, onConnectShared: () -> Unit) {
     var expanded by remember { mutableStateOf<String?>(null) }
     var name by remember(store.data.value?.settings?.name) { mutableStateOf(store.data.value?.settings?.name ?: "") }
     var thu by remember(store.data.value?.settings?.thursday) { mutableStateOf(store.data.value?.settings?.thursday ?: "18:00") }
@@ -1816,6 +1834,19 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                     OutlinedButton(onClick=onBackup, modifier=Modifier.weight(1f), shape=RoundedCornerShape(12.dp)) { Icon(MaterialSymbol("download"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Back up") }
                     OutlinedButton(onClick=onRestore, modifier=Modifier.weight(1f), shape=RoundedCornerShape(12.dp)) { Icon(MaterialSymbol("upload"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Restore") }
                 }
+                val backup = store.autoBackup.value
+                PreferenceRow(icon="cloud_done",title="Automatic backup",subtitle=when {
+                    backup.folderName != null -> "${backup.folderName} · JW Task Scheduler Auto.bcdv"
+                    else -> "Save a .bcdv copy to a folder you choose"
+                }) {
+                    Switch(checked=backup.enabled,onCheckedChange=onAutoBackupToggle,colors=appSwitchColors())
+                }
+                OutlinedButton(onClick=onChooseAutoBackupFolder,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(12.dp)) {
+                    Icon(MaterialSymbol("folder-open"),null,Modifier.size(17.dp)); Spacer(Modifier.width(7.dp))
+                    Text(if(backup.folderName==null) "Choose backup folder" else "Change backup folder")
+                }
+                backup.lastSaved?.let { Text("Last saved: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
+                backup.error?.let { Text("Backup issue: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=4.dp)) }
                 TextButton(onClick=onConnectShared, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
             } else {
                 Text("Optional sync is enabled for this shared workspace.", fontSize=11.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
