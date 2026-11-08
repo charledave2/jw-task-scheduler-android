@@ -739,7 +739,6 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     }
     var modalDate by remember(month) { mutableStateOf<LocalDate?>(null) }
     val scope = rememberCoroutineScope()
-    val darkMode = store.dark.value
     val firstDate = remember(month) { month.atDay(1) }
     val calendarCells = remember(month) {
         buildList<LocalDate?> {
@@ -842,7 +841,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                         Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 12.dp, end = 9.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                Text(if (dayMeetings.isEmpty()) "No meetings" else dayMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                if (dayMeetings.isEmpty()) Text("No meetings", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                             }
                             IconButton(onClick = { modalDate = null }) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
