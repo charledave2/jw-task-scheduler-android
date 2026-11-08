@@ -744,7 +744,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
         4 -> if (darkMode) Color(0xFF80C8B5) to Color(0xFF29463E) else Color(0xFF28685D) to Color(0xFFE2F0EC) // Thursday · teal
         6 -> if (darkMode) Color(0xFFE0B56A) to Color(0xFF4A3C25) else Color(0xFF8A6425) to Color(0xFFF7ECD7) // Saturday · amber
         7 -> if (darkMode) Color(0xFF9AB9D8) to Color(0xFF2C3D50) else Color(0xFF496887) to Color(0xFFE7EEF7) // Sunday · blue
-        else -> MaterialTheme.colorScheme.primary to MaterialTheme.colorScheme.secondaryContainer
+        else -> if (darkMode) Color(0xFFA9C6A8) to Color(0xFF34473A) else Color(0xFF5C745F) to Color(0xFFEDF2EB)
     }
     val firstDate = remember(month) { month.atDay(1) }
     val calendarCells = remember(month) {
@@ -844,6 +844,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
         val dayMeetings = meetingsByDate[date].orEmpty()
         Dialog(onDismissRequest = { modalDate = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
+                val dialogMaxHeight = maxHeight
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f)).clickable { modalDate = null })
                 Card(
                     Modifier.fillMaxWidth(.94f).heightIn(max = maxHeight * .92f),
@@ -860,7 +861,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                             IconButton(onClick = { modalDate = null }) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                        Column(Modifier.fillMaxWidth().heightIn(max = maxHeight * .72f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.fillMaxWidth().heightIn(max = dialogMaxHeight * .72f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             dayMeetings.forEach { meeting ->
                                 val meetingDay = LocalDate.parse(meeting.date).dayOfWeek.value
                                 val (meetingAccent, meetingContainer) = dayPalette(meetingDay)
