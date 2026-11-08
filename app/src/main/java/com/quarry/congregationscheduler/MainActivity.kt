@@ -673,6 +673,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
         }
     }
     editing?.let { person -> PersonEditorDialog(
+        localConfig = if (store.localMode) store.localConfig.value else null,
         person = person,
         photo = store.personPhotos.value[person.id],
         completedTasks = store.taskReviews.value.filter { it.personId == person.id && it.status == "completed" }.sortedByDescending { it.date },
@@ -859,13 +860,15 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
     val weeks = remember(month) { exportWeeks(month) }
     val selectedWeek = weeks.firstOrNull { it.first == weekStart } ?: weeks.first()
     val weekNumber = (weeks.indexOf(selectedWeek) + 1).coerceAtLeast(1)
-    val dayOrder = mapOf("thursday" to 0, "saturday" to 1, "sunday" to 2)
+    val localDepartments = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }.orEmpty() else emptyList()
+    val departmentFilters = if (store.localMode) localDepartments.map { it.label } else listOf("Mic Men", "Audio / Video", "Platform")
+    fun departmentName(id: String) = localDepartments.firstOrNull { it.id == id }?.label ?: deptLabel(id)
     val meetingsThisWeek = data?.meetings.orEmpty().filter { meeting ->
         val date = LocalDate.parse(meeting.date)
         date in selectedWeek.first..selectedWeek.second && YearMonth.from(date) == month
-    }.map { meeting -> meeting.copy(slots = meeting.slots.filter { filter == "All Departments" || deptLabel(it.department) == filter }) }
+    }.map { meeting -> meeting.copy(slots = meeting.slots.filter { filter == "All Departments" || departmentName(it.department) == filter }) }
         .filter { it.slots.isNotEmpty() }
-        .sortedBy { dayOrder[it.type] ?: 9 }
+        .sortedBy { it.date }
     val rows = meetingsThisWeek.filter { meeting -> !openOnly || meeting.slots.any { !it.isAssigned() } }
     val firstMeetingKey = rows.firstOrNull()?.let { it.date + it.type }
     val expandedKeys = expandedMeetings
@@ -877,10 +880,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                 ExportPickerField(Modifier.weight(1.25f), "Week $weekNumber", "${selectedWeek.first.format(DateTimeFormatter.ofPattern("MMM d"))} – ${selectedWeek.second.format(DateTimeFormatter.ofPattern("MMM d"))}", null) { weekPickerOpen = true }
             }
             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                val meetingByDay = rows.associateBy { it.type }
-                listOf("thursday", "saturday", "sunday").forEach { day ->
-                    val meeting = meetingByDay[day]
-                    if (meeting != null) {
+                rows.forEach { meeting ->
                     val open = meeting.slots.count { !it.isAssigned() }
                     val key = meeting.date + meeting.type
                     val selected = focusedMeeting == key || (focusedMeeting == null && key == firstMeetingKey)
@@ -895,13 +895,12 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                             if (open > 0) Text("$open open", fontSize = 9.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         }
                     }
-                    }
                 }
                 if (rows.isEmpty()) Text("No meetings in this week", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(vertical = 8.dp))
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf("All Departments", "Mic Men", "Audio / Video", "Platform").forEach { label -> FilterPill(label, filter == label) { filter = label; expandedMeetings = emptySet(); focusedMeeting = null } }
+                    (listOf("All Departments") + departmentFilters).forEach { label -> FilterPill(label, filter == label) { filter = label; expandedMeetings = emptySet(); focusedMeeting = null } }
                 }
                 Spacer(Modifier.width(6.dp))
             }
@@ -1043,6 +1042,7 @@ private fun PeopleScreen(store: AppStore) {
         }
     }
     if (editorOpen && admin) PersonEditorDialog(
+        localConfig = if (store.localMode) store.localConfig.value else null,
         person = editingPerson,
         photo = editingPerson?.let { store.personPhotos.value[it.id] },
         completedTasks = editingPerson?.let { person ->
@@ -1059,10 +1059,11 @@ private fun PeopleScreen(store: AppStore) {
 }
 
 @Composable
-private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
+private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
     val isNew = person == null
     var name by remember(person?.id) { mutableStateOf(person?.name ?: "") }
-    var group by remember(person?.id) { mutableIntStateOf(person?.group ?: 1) }
+    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf((person?.group ?: 1).coerceIn(1, localConfig?.groupCount ?: 9)) }
+    var customDepartments by remember(person?.id, localConfig) { mutableStateOf(person?.customDepartmentIds ?: emptySet()) }
     var status by remember(person?.id) { mutableStateOf(person?.status ?: "active") }
     var noThursday by remember(person?.id) { mutableStateOf(person?.noThursday ?: false) }
     var mic by remember(person?.id) { mutableStateOf(person?.mic ?: false) }
@@ -1159,10 +1160,19 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text("DEPARTMENTS & ROLES", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        PersonRoleToggle("Mic Men", mic) { mic = it }
-                        PersonRoleToggle("Audio Operator", audio) { audio = it }
-                        PersonRoleToggle("Video Operator", video) { video = it }
-                        PersonRoleToggle("Platform", platform) { platform = it }
+                        if (localConfig != null) {
+                            localConfig.departments.filter { it.active }.forEach { dept ->
+                                val checked = when (dept.id) { "mic" -> mic; "av" -> audio || video; "attendant" -> platform; else -> dept.id in customDepartments }
+                                PersonRoleToggle(dept.label, checked) { enabled ->
+                                    when (dept.id) { "mic" -> mic = enabled; "av" -> { audio = enabled; video = enabled }; "attendant" -> platform = enabled; else -> customDepartments = if (enabled) customDepartments + dept.id else customDepartments - dept.id }
+                                }
+                            }
+                        } else {
+                            PersonRoleToggle("Mic Men", mic) { mic = it }
+                            PersonRoleToggle("Audio Operator", audio) { audio = it }
+                            PersonRoleToggle("Video Operator", video) { video = it }
+                            PersonRoleToggle("Platform", platform) { platform = it }
+                        }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("STATUS", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1189,10 +1199,10 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
                     Button(onClick = {
                         val updated = Person(person?.id ?: "", name.trim(), group, status, noThursday, mic, audio, video, platform,
                             person?.gate ?: false, person?.remarks.orEmpty(), person?.allowDuplicate ?: false, person?.ignoreMeetingConflict ?: false,
-                            person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal")
+                            person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal", person?.avatarUpdatedAt, customDepartments)
                         when {
                             name.trim().length < 2 -> error = "Enter a name with at least 2 characters."
-                            !mic && !audio && !video && !platform -> error = "Select at least one department role."
+                            !mic && !audio && !video && !platform && customDepartments.isEmpty() -> error = "Select at least one department role."
                             else -> { saving = true; error = null; scope.launch { try { onSave(updated); onDismiss() } catch (e: Exception) { error = e.message ?: "Could not save person." } finally { saving = false } } }
                         }
                     }, enabled = !saving, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 17.dp, vertical = 9.dp)) {
@@ -1202,7 +1212,7 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
             }
         }
     }
-    if (groupPickerOpen) GroupPickerDialog(selected = group, noThursday = noThursday, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
+    if (groupPickerOpen) GroupPickerDialog(selected = group, groupCount = localConfig?.groupCount ?: 9, noThursday = noThursday, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
     if (confirmDelete && person != null) AlertDialog(
         onDismissRequest = { confirmDelete = false },
         title = { Text("Delete ${person.name}?") },
@@ -1213,7 +1223,7 @@ private fun PersonEditorDialog(person: Person?, photo: ImageBitmap?, completedTa
 }
 
 @Composable
-private fun GroupPickerDialog(selected: Int, noThursday: Boolean, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
+private fun GroupPickerDialog(selected: Int, groupCount: Int, noThursday: Boolean, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Card(Modifier.fillMaxWidth(.88f), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(18.dp)) {
@@ -1224,18 +1234,17 @@ private fun GroupPickerDialog(selected: Int, noThursday: Boolean, onDismiss: () 
                 }
                 Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (0..2).forEach { row ->
+                    (1..groupCount.coerceIn(1, 30)).toList().chunked(4).forEach { row ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            (1..3).forEach { col ->
-                                val number = row * 3 + col
+                            row.forEach { number ->
                                 val isSelected = number == selected
-                                Surface(onClick = { onSelect(number) }, modifier = Modifier.weight(1f).height(64.dp), shape = RoundedCornerShape(13.dp), color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                                Surface(onClick = { onSelect(number) }, modifier = Modifier.weight(1f).height(58.dp), shape = RoundedCornerShape(13.dp), color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, border = if (isSelected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                                         Text(number.toString(), fontSize = 18.sp, fontWeight = FontWeight.Bold, color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
-                                        Text(when (number) { in 1..4 -> "Sunday"; in 5..9 -> "Saturday"; else -> "" }, fontSize = 9.sp, color = if (isSelected) MaterialTheme.colorScheme.onPrimary.copy(.82f) else MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
+                            repeat(4-row.size) { Spacer(Modifier.weight(1f)) }
                         }
                     }
                 }
@@ -1794,6 +1803,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
     var sat by remember(store.data.value?.settings?.saturday) { mutableStateOf(store.data.value?.settings?.saturday ?: "15:30") }
     var sun by remember(store.data.value?.settings?.sunday) { mutableStateOf(store.data.value?.settings?.sunday ?: "07:45") }
     val admin = store.user.value?.role == "admin"
+    var localConfigDialog by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
         SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
@@ -1811,10 +1821,18 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
         SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
             OutlinedTextField(name, { name=it }, label={Text("Congregation Name")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
             Spacer(Modifier.height(8.dp))
-            MeetingTimeRow("Thursday", thu) { thu=it }
-            MeetingTimeRow("Saturday", sat) { sat=it }
-            MeetingTimeRow("Sunday", sun) { sun=it }
-            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null } catch(e:Exception) { } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
+            if (!store.localMode) {
+                MeetingTimeRow("Thursday", thu) { thu=it }
+                MeetingTimeRow("Saturday", sat) { sat=it }
+                MeetingTimeRow("Sunday", sun) { sun=it }
+            } else Text("Set all meeting days and times in Congregation setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null; snackbar.showSnackbar("Workspace settings saved.") } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace settings.") } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
+            if (store.localMode && admin) {
+                OutlinedButton(onClick={ localConfigDialog=true }, modifier=Modifier.fillMaxWidth().padding(top=8.dp).height(44.dp), shape=RoundedCornerShape(12.dp)) {
+                    Icon(MaterialSymbol("tune"), null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Groups, departments & meetings")
+                }
+                Text("Customize the setup for this local congregation. Shared workspace settings stay unchanged.", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
+            }
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) { Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold); TextButton(onClick=onAddAccount) { Text("+ Add") } }
@@ -1866,7 +1884,121 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             }
         }
     }
+    if (localConfigDialog && store.localMode && admin) LocalWorkspaceConfigDialog(
+        initial = store.localConfig.value ?: LocalWorkspaceConfig(9, emptyList(), emptyList()),
+        onDismiss = { localConfigDialog=false },
+        onSave = { value ->
+            runCatching { store.saveLocalConfig(value) }.onSuccess {
+                scope.launch { try { store.load(); snackbar.showSnackbar("Local congregation setup saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not refresh schedule.") } }
+            }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not save local setup.") } }
+        }
+    )
 }
+
+@Composable
+private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss: () -> Unit, onSave: (LocalWorkspaceConfig) -> Unit) {
+    var groupCount by remember(initial) { mutableIntStateOf(initial.groupCount) }
+    var departments by remember(initial) { mutableStateOf(initial.departments.toMutableList()) }
+    var meetings by remember(initial) { mutableStateOf(initial.meetings.toMutableList()) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var newDepartment by remember { mutableStateOf("") }
+    var newMeeting by remember { mutableStateOf("") }
+    var selectedDay by remember { mutableIntStateOf(4) }
+    val scroll=rememberScrollState()
+    Dialog(onDismissRequest=onDismiss, properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        Surface(Modifier.fillMaxWidth(.94f).widthIn(max=520.dp).fillMaxHeight(.88f), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
+            Column {
+                Row(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text("LOCAL WORKSPACE",fontSize=9.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
+                    IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close")}
+                }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                Column(Modifier.weight(1f).verticalScroll(scroll).padding(horizontal=18.dp,vertical=14.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
+                    Text("GROUPS",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        Text("Number of groups",Modifier.weight(1f),fontSize=13.sp)
+                        OutlinedButton(onClick={if(groupCount>1)groupCount--},shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
+                        Text(groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
+                        OutlinedButton(onClick={if(groupCount<30)groupCount++},shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
+                    }
+                    HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                    Text("DEPARTMENTS & ROLES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    departments.forEachIndexed { index, dept ->
+                        Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
+                            Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
+                                Row(verticalAlignment=Alignment.CenterVertically) {
+                                    OutlinedTextField(dept.label,{ value -> departments=departments.toMutableList().also { it[index]=dept.copy(label=value) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Department")},shape=RoundedCornerShape(11.dp))
+                                    IconButton(onClick={departments=departments.toMutableList().also { it[index]=dept.copy(active=!dept.active) }}) { Icon(MaterialSymbol(if(dept.active)"archive" else "unarchive"),if(dept.active)"Archive department" else "Restore department",tint=MaterialTheme.colorScheme.primary) }
+                                    
+                                }
+                                dept.roles.forEachIndexed { roleIndex, role ->
+                                    Row(verticalAlignment=Alignment.CenterVertically) {
+                                        OutlinedTextField(role.label,{ value -> val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(label=value) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Assignment / role")},shape=RoundedCornerShape(10.dp))
+                                        IconButton(onClick={ val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(active=!role.active) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol(if(role.active)"archive" else "unarchive"),if(role.active)"Archive role" else "Restore role",tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+                                    }
+                                }
+                                TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}","New assignment"); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
+                                if(!dept.active) Text("Archived for new schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(newDepartment,{newDepartment=it},modifier=Modifier.weight(1f),singleLine=true,label={Text("New department")},shape=RoundedCornerShape(11.dp))
+                        FilledTonalButton(onClick={ val label=newDepartment.trim(); if(label.isNotBlank()){ val id="dept_${System.currentTimeMillis()}"; departments=departments+LocalDepartment(id,label,emptyList()); newDepartment="" } },shape=RoundedCornerShape(11.dp)){Text("Add")}
+                    }
+                    HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                    Text("MEETING DAYS & TIMES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    meetings.forEachIndexed { index, meeting ->
+                        Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
+                            Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
+                                Row(verticalAlignment=Alignment.CenterVertically) {
+                                    OutlinedTextField(meeting.label,{v->meetings=meetings.toMutableList().also { it[index]=meeting.copy(label=v) }},modifier=Modifier.weight(1f),singleLine=true,label={Text("Meeting name")},shape=RoundedCornerShape(11.dp))
+                                    IconButton(onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(active=false) }}) { Icon(MaterialSymbol("delete"),"Archive meeting",tint=MaterialTheme.colorScheme.error) }
+                                }
+                                Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                                    var dayMenu by remember(meeting.id) { mutableStateOf(false) }
+                                    Box {
+                                        OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(dayName(meeting.dayOfWeek),fontSize=12.sp)}
+                                        DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}) { (1..7).forEach { d->DropdownMenuItem(text={Text(dayName(d))},onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(dayOfWeek=d) };dayMenu=false}) } }
+                                    }
+                                    TimeInput(meeting.time){ t->meetings=meetings.toMutableList().also { it[index]=meeting.copy(time=t) } }
+                                }
+                                Text("Eligible groups",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(5.dp)) {
+                                    (1..groupCount).forEach { g ->
+                                        val enabled=g in meeting.eligibleGroups
+                                        FilterPill(g.toString(),enabled){ meetings=meetings.toMutableList().also { it[index]=meeting.copy(eligibleGroups=if(enabled)meeting.eligibleGroups-g else meeting.eligibleGroups+g) } }
+                                    }
+                                }
+                                if(!meeting.active) Text("Archived from future schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(newMeeting,{newMeeting=it},modifier=Modifier.weight(1f),singleLine=true,label={Text("New meeting")},shape=RoundedCornerShape(11.dp))
+                        var dayMenu by remember { mutableStateOf(false) }
+                        Box { OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(dayName(selectedDay))}; DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}){(1..7).forEach{d->DropdownMenuItem(text={Text(dayName(d))},onClick={selectedDay=d;dayMenu=false})}} }
+                        FilledTonalButton(onClick={val label=newMeeting.trim();if(label.isNotBlank()){meetings=meetings+LocalMeetingRule("meeting_${System.currentTimeMillis()}",label,selectedDay,"09:00",(1..groupCount).toSet());newMeeting=""}},shape=RoundedCornerShape(11.dp)){Text("Add")}
+                    }
+                    error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=11.sp) }
+                    Text("Archived departments and removed meetings stop appearing in new schedules. Existing saved assignments remain in the local backup.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,lineHeight=15.sp)
+                }
+                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=10.dp),horizontalArrangement=Arrangement.End,verticalAlignment=Alignment.CenterVertically) {
+                    TextButton(onClick=onDismiss){Text("Cancel")}
+                    Button(onClick={
+                        val normalized=departments.map { d-> d.copy(label=d.label.trim(),roles=d.roles.map { it.copy(label=it.label.trim()) }) }
+                        val cleanedMeetings=meetings.map { it.copy(label=it.label.trim(),eligibleGroups=it.eligibleGroups.filter { g->g in 1..groupCount }.toSet()) }
+                        val config=LocalWorkspaceConfig(groupCount,normalized,cleanedMeetings)
+                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; cleanedMeetings.any { it.eligibleGroups.isEmpty() } -> error="Each meeting needs at least one eligible group."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." }
+                    },shape=RoundedCornerShape(12.dp)){Text("Save setup")}
+                }
+            }
+        }
+    }
+}
+
+private fun dayName(day: Int): String = when(day) { 1->"Monday";2->"Tuesday";3->"Wednesday";4->"Thursday";5->"Friday";6->"Saturday";7->"Sunday";else->"Day" }
 
 @Composable
 private fun GenerateDialogContent(onConfirm: () -> Unit) { Text("Review the generated draft before applying it.") }
