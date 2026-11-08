@@ -401,7 +401,7 @@ fun SchedulerApp() {
                 drawerContent = {
                     ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(310.dp), drawerContainerColor = MaterialTheme.colorScheme.surface) {
                         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 30.dp, bottom = 20.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 12.dp)) {
                                 Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
                                 Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 15.sp); Text(store.data.value?.settings?.name ?: "Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
                                 IconButton(onClick = { scope.launch { drawerState.close() } }) { Icon(MaterialSymbol("close"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -412,7 +412,12 @@ fun SchedulerApp() {
                                 if (store.user.value?.role in setOf("admin", "assistant")) add("Task Review" to "clipboard-check")
                                 addAll(listOf("Export Studio" to "file-down", "Settings & Accounts" to "settings"))
                             }
-                            items.forEach { (label, icon) ->
+                            LazyColumn(
+                                modifier = Modifier.weight(1f).fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                items(items) { (label, icon) ->
                                 val isSelected = page == label || (label == "Manage Schedule" && page == "Schedule")
                                 NavigationDrawerItem(
                                     label = { Text(label, fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
@@ -430,8 +435,9 @@ fun SchedulerApp() {
                                     modifier = Modifier.padding(vertical = 2.dp), colors = NavigationDrawerItemDefaults.colors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.onPrimary, selectedIconColor = MaterialTheme.colorScheme.onPrimary)
                                 )
                             }
-                            Spacer(Modifier.weight(1f)); HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 26.dp), verticalAlignment = Alignment.CenterVertically) {
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Spacer(Modifier.width(12.dp))
                                 Icon(MaterialSymbol("log-out"), contentDescription = "Sign out", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
                                 Spacer(Modifier.width(12.dp))
