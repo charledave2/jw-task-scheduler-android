@@ -839,7 +839,7 @@ private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
     modalDate?.let { date ->
         val dayMeetings = meetingsByDate[date].orEmpty()
         Dialog(onDismissRequest = { modalDate = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.BottomCenter) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f)).clickable { modalDate = null })
                 Card(
                     Modifier.fillMaxWidth().fillMaxHeight(.78f),
