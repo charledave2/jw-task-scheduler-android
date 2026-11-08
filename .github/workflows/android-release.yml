@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/**"
+      - "app/build.gradle.kts"
   workflow_dispatch:
 
 permissions:
