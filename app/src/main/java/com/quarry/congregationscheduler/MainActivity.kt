@@ -1755,6 +1755,7 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
     val ink = android.graphics.Color.rgb(39, 38, 32)
     val muted = android.graphics.Color.rgb(105, 100, 85)
     val border = android.graphics.Color.rgb(207, 199, 174)
+    val teal = android.graphics.Color.rgb(43, 108, 99)
     val dayColors = mapOf(
         1 to android.graphics.Color.rgb(57, 104, 137),   // Monday · blue
         2 to android.graphics.Color.rgb(163, 83, 61),   // Tuesday · terracotta
