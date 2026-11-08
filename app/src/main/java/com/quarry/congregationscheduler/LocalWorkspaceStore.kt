@@ -82,10 +82,12 @@ class LocalWorkspaceStore(context: Context) {
     }
 
     @Synchronized fun configureAutoBackupFolder(uri:Uri):String {
-        backupPreferences.edit().putString("tree_uri",uri.toString()).putBoolean("enabled",true).remove("last_error").apply()
+        // Validate the selected folder first; switch active backup destination only after
+        // a real write succeeds so a failed selection never replaces the working folder.
         return try {
-            writeAutomaticBackup()
-            backupPreferences.edit().putString("last_saved",Instant.now().toString()).apply()
+            writeAutomaticBackup(uri)
+            backupPreferences.edit().putString("tree_uri",uri.toString()).putBoolean("enabled",true)
+                .putString("last_saved",Instant.now().toString()).remove("last_error").apply()
             folderDisplayName(uri)
         } catch(error:Exception) {
             backupPreferences.edit().putString("last_error",error.message ?: "Automatic backup failed.").apply()
@@ -100,8 +102,8 @@ class LocalWorkspaceStore(context: Context) {
         } ?: treeUri.lastPathSegment ?: "Selected folder"
     }.getOrDefault("Selected folder")
 
-    private fun writeAutomaticBackup() {
-        val treeUri=backupPreferences.getString("tree_uri",null)?.let(Uri::parse) ?: error("Choose a backup folder first.")
+    private fun writeAutomaticBackup(treeUriOverride:Uri?=null) {
+        val treeUri=treeUriOverride ?: backupPreferences.getString("tree_uri",null)?.let(Uri::parse) ?: error("Choose a backup folder first.")
         val fileName="JW-Task-Scheduler-Auto.bcdv"
         val treeId=DocumentsContract.getTreeDocumentId(treeUri)
         val rootDocumentUri=DocumentsContract.buildDocumentUriUsingTree(treeUri,treeId)
