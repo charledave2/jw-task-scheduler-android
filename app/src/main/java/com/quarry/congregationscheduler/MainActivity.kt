@@ -105,6 +105,7 @@ class AppStore(context: android.content.Context) {
     val calendarRequestedDate = mutableStateOf<LocalDate?>(null)
     val calendarShouldOpenDate = mutableStateOf(false)
     val mode = mutableStateOf(preferences.getString("workspace_mode", null))
+    val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
     val localMode get() = mode.value == "local"
 
     fun createLocalWorkspace(name: String) {
@@ -117,6 +118,8 @@ class AppStore(context: android.content.Context) {
     fun importLocalBackup(content: String) = local.import(content)
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
+    fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
+    fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config }
 
     suspend fun initialize() {
         loading.value = true
@@ -148,6 +151,7 @@ class AppStore(context: android.content.Context) {
         error.value = null
         try {
             data.value = if (localMode) local.schedule(month.value) else api.loadSchedule(month.value)
+            if (localMode) localConfig.value = local.config()
             // Keep schedules usable while the Cloudflare migration/API update is being deployed.
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
@@ -371,7 +375,7 @@ fun SchedulerApp() {
         } else if (signedIn == null && workspaceMode == null) {
             WorkspaceModeScreen(onLocal = { name -> store.createLocalWorkspace(name); scope.launch { runCatching { store.load() } } }, onShared = { store.chooseSharedWorkspace() })
         } else if (signedIn == null) {
-            LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } })
+            LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
             ModalNavigationDrawer(
                 drawerState = drawerState,
@@ -527,11 +531,11 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
 }
 
 @Composable
-private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, String) -> Unit) {
+private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, String) -> Unit, onBackToSetup: () -> Unit) {
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Spacer(Modifier.height(15.dp)); Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface); Text("Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        Spacer(Modifier.height(15.dp)); Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
         Spacer(Modifier.height(28.dp)); Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(22.dp)) {
                 Text("Welcome back", fontWeight = FontWeight.Bold, fontSize = 23.sp); Text("Sign in to your workspace", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 20.dp))
@@ -541,7 +545,8 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
                 Spacer(Modifier.height(18.dp)); Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) { if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White) else Text("Sign In", fontWeight = FontWeight.SemiBold) }
             }
         }
-        Spacer(Modifier.height(18.dp)); Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        Spacer(Modifier.height(8.dp)); TextButton(onClick=onBackToSetup, enabled=!loading) { Text("Back to setup") }
+        Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
     }
 }
 
@@ -2120,15 +2125,16 @@ private fun slotIcon(slot: Slot): String = when (slot.department) {
     "av" -> if (slot.key.contains("video", ignoreCase = true) || slot.label.contains("video", ignoreCase = true)) "camera" else "audio-lines"
     else -> "podium"
 }
-private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturday"->"Saturday";else->"Sunday"}
+private fun meetingLabel(type:String)=when(type){"thursday"->"Thursday";"saturday"->"Saturday";"sunday"->"Sunday";else->type.replace('_',' ').split(' ').joinToString(" "){it.replaceFirstChar(Char::uppercase)}}
 private fun friendlyDate(date:String)=try{LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MMM d"))}catch(_:Exception){date}
 private fun prettyTime(time:String)=try{val parts=time.split(":");val h=parts[0].toInt();val m=parts.getOrElse(1){"00"};"${if(h%12==0)12 else h%12}:$m ${if(h<12)"AM" else "PM"}"}catch(_:Exception){time}
 private fun Person.eligibleSummary():String=buildList { if(mic)add("Mic");if(audio||video)add("Audio / Video");if(platform)add("Platform") }.joinToString(" · ").ifBlank { "No eligible assignments" }
 private fun personEligible(person:Person,meeting:Meeting,slot:Slot):Boolean {
     if(person.status!="active") return false
-    val groupEligible = when(meeting.type){"thursday"->!person.noThursday;"saturday"->person.group in 5..9;else->person.group in 1..4}
+    if (meeting.type=="thursday" && person.noThursday) return false
+    val groupEligible = meeting.eligibleGroups?.contains(person.group) ?: when(meeting.type){"thursday"->true;"saturday"->person.group in 5..9;"sunday"->person.group in 1..4;else->true}
     if(!groupEligible) return false
-    return when(slot.department){"mic"->person.mic;"av"->if(slot.key.contains("video"))person.video else person.audio;"attendant"->person.platform;else->false}
+    return when(slot.department){"mic"->person.mic;"av"->if(slot.key.contains("video"))person.video else person.audio;"attendant"->person.platform;else->slot.department in person.customDepartmentIds}
 }
 private fun shareText(context:android.content.Context,text:String){val intent=Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT,text);context.startActivity(Intent.createChooser(intent,"Share Schedule"))}
 

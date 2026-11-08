@@ -36,10 +36,11 @@ data class Person(
     val id: String, val name: String, val group: Int, val status: String, val noThursday: Boolean,
     val mic: Boolean, val audio: Boolean, val video: Boolean, val platform: Boolean, val gate: Boolean = false,
     val remarks: String = "", val allowDuplicate: Boolean = false, val ignoreMeetingConflict: Boolean = false,
-    val neverAutoAssign: Boolean = false, val assignmentPriority: String = "normal", val avatarUpdatedAt: String? = null
+    val neverAutoAssign: Boolean = false, val assignmentPriority: String = "normal", val avatarUpdatedAt: String? = null,
+    val customDepartmentIds: Set<String> = emptySet()
 )
 data class Slot(val key: String, val label: String, val personId: String?, val name: String?, val department: String, val backup: Boolean = false, val locked: Boolean = false)
-data class Meeting(val date: String, val type: String, val time: String, val slots: List<Slot>, val rawMic: JSONObject?)
+data class Meeting(val date: String, val type: String, val time: String, val slots: List<Slot>, val rawMic: JSONObject?, val eligibleGroups: Set<Int>? = null)
 data class UserInfo(val id: String, val username: String, val displayName: String, val role: String, val permissions: String)
 data class WorkspaceSettings(val name: String, val thursday: String, val saturday: String, val sunday: String)
 data class ScheduleData(val people: List<Person>, val meetings: List<Meeting>, val settings: WorkspaceSettings)
