@@ -14,7 +14,7 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.DayOfWeek
 
-private const val API_BASE = "https://congregation-scheduler-pro.pages.dev/"
+private const val API_BASE = "https://main.congregation-scheduler-pro.pages.dev/"
 
 class TokenStore(context: Context) {
     private val prefs by lazy {
