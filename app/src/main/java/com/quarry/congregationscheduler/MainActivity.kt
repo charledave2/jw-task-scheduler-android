@@ -106,8 +106,10 @@ class AppStore(context: android.content.Context) {
     val calendarShouldOpenDate = mutableStateOf(false)
     val mode = mutableStateOf(preferences.getString("workspace_mode", null))
     val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
+    val cloudConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
     val autoBackup = mutableStateOf(local.autoBackupInfo())
     val localMode get() = mode.value == "local"
+    val workspaceConfig get() = if (localMode) localConfig.value else cloudConfig.value
 
     fun createLocalWorkspace(name: String) {
         mode.value = "local"
@@ -124,6 +126,7 @@ class AppStore(context: android.content.Context) {
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
     fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
     fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config; refreshAutoBackupInfo() }
+    suspend fun saveCloudConfig(config:LocalWorkspaceConfig) { cloudConfig.value=api.saveWorkspaceConfig(config) }
 
     suspend fun initialize() {
         loading.value = true
@@ -154,8 +157,8 @@ class AppStore(context: android.content.Context) {
     suspend fun load() {
         error.value = null
         try {
-            data.value = if (localMode) local.schedule(month.value) else api.loadSchedule(month.value)
-            if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo() }
+            if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
+            else { cloudConfig.value = api.loadWorkspaceConfig(); data.value = api.loadSchedule(month.value, cloudConfig.value) }
             // Keep schedules usable while the Cloudflare migration/API update is being deployed.
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
@@ -170,7 +173,7 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun loadReviewRange(start: LocalDate, end: LocalDate): Pair<List<Meeting>, List<TaskReview>> {
         val months = generateSequence(YearMonth.from(start)) { previous -> if (previous < YearMonth.from(end)) previous.plusMonths(1) else null }.toList()
-        val schedules = months.map { if (localMode) local.schedule(it) else api.loadSchedule(it) }
+        val schedules = months.map { if (localMode) local.schedule(it) else api.loadSchedule(it, cloudConfig.value ?: api.loadWorkspaceConfig()) }
         val reviews = months.flatMap { if (localMode) local.reviews(it) else api.loadTaskReviews(it) }
         return schedules.flatMap { it.meetings }.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) } to reviews.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) }
     }
@@ -188,7 +191,7 @@ class AppStore(context: android.content.Context) {
         return loaded
     }
     suspend fun changeMonth(next: YearMonth) { month.value = next; load() }
-    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month)
+    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month, cloudConfig.value ?: api.loadWorkspaceConfig())
     suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) local.saveAssignment(meeting, slot, person) else api.assign(meeting, slot, person); load() }
     suspend fun savePerson(person: Person) {
         loading.value = true
@@ -456,7 +459,7 @@ fun SchedulerApp() {
                             "Schedule Calendar" -> ScheduleCalendarScreen(store)
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
-                            "Reports" -> ReportsScreen(store.data.value, if (store.localMode) store.localConfig.value else null)
+                            "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
@@ -604,8 +607,8 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         }
         TopPerformerCard(data?.people.orEmpty(), store.taskReviews.value, store.month.value, store)
         SectionTitle("Departments", "Directory") { onGo("People Directory") }
-        val configuredDepartments = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.label to it.id }.orEmpty() else emptyList()
-        val departments = if (store.localMode) configuredDepartments else listOf("Mic Men" to "mic", "Audio / Video" to "av", "Platform" to "attendant")
+        val configuredDepartments = store.workspaceConfig?.departments?.filter { it.active }?.map { it.label to it.id }.orEmpty()
+        val departments = configuredDepartments
         departments.forEach { (name, dept) ->
             val members = data?.people.orEmpty().filter { person -> person.status == "active" && when (dept) { "mic" -> person.mic; "av" -> person.audio || person.video; "attendant", "platform" -> person.platform; else -> dept in person.customDepartmentIds } }
             RowCard(icon = when(dept) { "mic" -> "mic"; "av" -> "audio-lines"; "attendant", "platform" -> "podium"; else -> "groups" }, title = name, subtitle = "${members.size} active ${if (members.size == 1) "member" else "members"}", trailing = "View", onClick = { selectedDepartment = name to members })
@@ -621,7 +624,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 
 @Composable
 private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, month: YearMonth, store: AppStore) {
-    val options = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty() else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
+    val options = store.workspaceConfig?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
     var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "mic") }
     val label = options.firstOrNull { it.first == department }?.second ?: "Department"
 
@@ -696,7 +699,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
         }
     }
     editing?.let { person -> PersonEditorDialog(
-        localConfig = if (store.localMode) store.localConfig.value else null,
+        localConfig = store.workspaceConfig,
         person = person,
         photo = store.personPhotos.value[person.id],
         completedTasks = store.taskReviews.value.filter { it.personId == person.id && it.status == "completed" }.sortedByDescending { it.date },
@@ -883,8 +886,8 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
     val weeks = remember(month) { exportWeeks(month) }
     val selectedWeek = weeks.firstOrNull { it.first == weekStart } ?: weeks.first()
     val weekNumber = (weeks.indexOf(selectedWeek) + 1).coerceAtLeast(1)
-    val localDepartments = if (store.localMode) store.localConfig.value?.departments?.filter { it.active }.orEmpty() else emptyList()
-    val departmentFilters = if (store.localMode) localDepartments.map { it.label } else listOf("Mic Men", "Audio / Video", "Platform")
+    val localDepartments = store.workspaceConfig?.departments?.filter { it.active }.orEmpty()
+    val departmentFilters = localDepartments.map { it.label }
     fun departmentName(id: String) = localDepartments.firstOrNull { it.id == id }?.label ?: deptLabel(id)
     val meetingsThisWeek = data?.meetings.orEmpty().filter { meeting ->
         val date = LocalDate.parse(meeting.date)
@@ -1894,17 +1897,13 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
         SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
             OutlinedTextField(name, { name=it }, label={Text("Congregation Name")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
             Spacer(Modifier.height(8.dp))
-            if (!store.localMode) {
-                MeetingTimeRow("Thursday", thu) { thu=it }
-                MeetingTimeRow("Saturday", sat) { sat=it }
-                MeetingTimeRow("Sunday", sun) { sun=it }
-            } else Text("Set all meeting days and times in Congregation setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Manage meeting days, times, groups, departments, and roles in workspace setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
             Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null; snackbar.showSnackbar("Workspace settings saved.") } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace settings.") } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
-            if (store.localMode && admin) {
+            if (admin) {
                 OutlinedButton(onClick={ localConfigDialog=true }, modifier=Modifier.fillMaxWidth().padding(top=8.dp).height(44.dp), shape=RoundedCornerShape(12.dp)) {
                     Icon(MaterialSymbol("tune"), null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Groups, departments & meetings")
                 }
-                Text("Customize the setup for this local congregation. Shared workspace settings stay unchanged.", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
+                Text(if (store.localMode) "Customize groups, departments, roles, and meeting times for this device." else "Customize groups, departments, roles, and meeting times for the shared congregation.", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
             }
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
@@ -1965,19 +1964,17 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             confirmButton = { TextButton(onClick = { sharedSyncInfo = false }) { Text("Got it") } }
         )
     }
-    if (localConfigDialog && store.localMode && admin) LocalWorkspaceConfigDialog(
-        initial = store.localConfig.value ?: LocalWorkspaceConfig(0, emptyList(), emptyList()),
+    if (localConfigDialog && admin) LocalWorkspaceConfigDialog(
+        initial = store.workspaceConfig ?: LocalWorkspaceConfig(0, emptyList(), emptyList()),
+        maxGroups = if (store.localMode) 30 else 9,
+        workspaceLabel = if (store.localMode) "LOCAL WORKSPACE" else "SHARED WORKSPACE",
         onDismiss = { localConfigDialog=false },
-        onSave = { value ->
-            runCatching { store.saveLocalConfig(value) }.onSuccess {
-                scope.launch { try { store.load(); snackbar.showSnackbar("Local congregation setup saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not refresh schedule.") } }
-            }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not save local setup.") } }
-        }
+        onSave = { value -> scope.launch { try { if (store.localMode) store.saveLocalConfig(value) else store.saveCloudConfig(value); store.load(); snackbar.showSnackbar("Workspace setup saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace setup.") } } }
     )
 }
 
 @Composable
-private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss: () -> Unit, onSave: (LocalWorkspaceConfig) -> Unit) {
+private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups: Int, workspaceLabel: String, onDismiss: () -> Unit, onSave: (LocalWorkspaceConfig) -> Unit) {
     var groupCount by remember(initial) { mutableIntStateOf(initial.groupCount) }
     var departments by remember(initial) { mutableStateOf<List<LocalDepartment>>(initial.departments) }
     var meetings by remember(initial) { mutableStateOf<List<LocalMeetingRule>>(initial.meetings) }
@@ -1992,7 +1989,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
         Surface(Modifier.fillMaxWidth(.94f).widthIn(max=520.dp).fillMaxHeight(.88f), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 Row(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text("LOCAL WORKSPACE",fontSize=9.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
+                    Column(Modifier.weight(1f)) { Text(workspaceLabel,fontSize=9.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
                     IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close")}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
@@ -2002,7 +1999,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                         Text("Number of groups",Modifier.weight(1f),fontSize=13.sp)
                         OutlinedButton(onClick={if(groupCount>0)groupCount--},enabled=groupCount>0,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
                         Text(if(groupCount==0)"—" else groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
-                        OutlinedButton(onClick={if(groupCount<30)groupCount++},enabled=groupCount<30,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
+                        OutlinedButton(onClick={if(groupCount<maxGroups)groupCount++},enabled=groupCount<maxGroups,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
                     }
                     Text(if(groupCount==0)"No groups configured yet. Add the number your congregation uses." else "$groupCount numbered groups are available for personnel and meeting eligibility.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
@@ -2379,7 +2376,7 @@ private fun Person.eligibleSummary(config:LocalWorkspaceConfig?=null):String {
 }
 private fun personEligible(person:Person,meeting:Meeting,slot:Slot):Boolean {
     if(person.status!="active") return false
-    if (meeting.type=="thursday" && person.noThursday) return false
+    if ((meeting.dayOfWeek == 4 || meeting.type=="thursday") && person.noThursday) return false
     val groupEligible = meeting.eligibleGroups?.contains(person.group) ?: when(meeting.type){"thursday"->true;"saturday"->person.group in 5..9;"sunday"->person.group in 1..4;else->true}
     if(!groupEligible) return false
     return when(slot.department){"mic"->person.mic;"av"->if(slot.key.contains("video"))person.video else person.audio;"attendant"->person.platform;else->slot.department in person.customDepartmentIds}
