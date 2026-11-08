@@ -517,6 +517,7 @@ fun SchedulerApp() {
         ) }
     }
       }
+    }
 }
 
 @Composable
