@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.0.36
+- Fixed the Android shared-workspace API endpoint so sign-in loads congregation configuration correctly.
 - Added shared-workspace setup for groups, departments, assignment roles, and meeting days/times.
 - Connected cloud schedule, assignments, reviews, reports, and personnel eligibility to congregation setup.
 - Added custom department membership support for shared workspaces.
