@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.40
+- Restored the calendar’s uniform theme colors for dates, meeting markers, and schedule details.
+- Removed the duplicate calendar section title and repeated meeting time text.
+
 ## 1.0.39
 - Restored Schedule Calendar as a regular page.
 - Meeting dates open a centered, scrollable details modal.
