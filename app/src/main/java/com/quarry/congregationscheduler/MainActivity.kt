@@ -758,16 +758,15 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
-        Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
-            Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                Spacer(Modifier.weight(1f))
-                IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
-                Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
-            }
-        }
         Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
+                    Spacer(Modifier.weight(1f))
+                    Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
+                }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT").forEach { day ->
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(day, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
