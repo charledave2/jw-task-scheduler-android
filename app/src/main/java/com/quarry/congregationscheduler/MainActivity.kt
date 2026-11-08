@@ -1590,7 +1590,7 @@ private fun ExportScreen(store: AppStore) {
     val period = "${chosenWeek.first.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))} – ${chosenWeek.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
     val posterDepartments = if(store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
         else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
-    val poster = remember(exportData, selectedMeetings, period, posterDepartments) { renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period, posterDepartments) }
+    val poster = renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period, posterDepartments)
     val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2331,6 +2331,19 @@ private fun meetingTitle(meeting: Meeting): String = meeting.displayLabel?.takeI
 private fun friendlyDate(date:String)=try{LocalDate.parse(date).format(DateTimeFormatter.ofPattern("MMM d"))}catch(_:Exception){date}
 private fun prettyTime(time:String)=try{val parts=time.split(":");val h=parts[0].toInt();val m=parts.getOrElse(1){"00"};"${if(h%12==0)12 else h%12}:$m ${if(h<12)"AM" else "PM"}"}catch(_:Exception){time}
 private fun Person.eligibleSummary(config:LocalWorkspaceConfig?=null):String {
+    val labels=if(config!=null) config.departments.filter { it.active }.mapNotNull { dept ->
+        // Keep renamed built-in roles compatible with both current and older person records.
+        val normalized=dept.label.trim().lowercase().replace("&","and").replace(Regex("[^a-z0-9]+")," ")
+        val standardEligible=when {
+            dept.id=="mic" || normalized in setOf("mic","mic men","microphone","microphones") -> mic
+            dept.id=="av" || normalized in setOf("audio video","audio and video","audio","video","audio operator","video operator") -> audio||video
+            dept.id=="attendant" || normalized in setOf("platform","platform operator") -> platform
+            else -> false
+        }
+        dept.label.takeIf { standardEligible || dept.id in customDepartmentIds }
+    } else buildList { if(mic)add("Mic Men");if(audio||video)add("Audio / Video");if(platform)add("Platform") }
+    return labels.distinct().joinToString(" · ").ifBlank { "No eligible assignments" }
+}
     val labels=if(config!=null) config.departments.filter { it.active }.mapNotNull { dept ->
         val eligible=when(dept.id) { "mic"->mic; "av"->audio||video; "attendant"->platform; else->dept.id in customDepartmentIds }
         dept.label.takeIf { eligible }
