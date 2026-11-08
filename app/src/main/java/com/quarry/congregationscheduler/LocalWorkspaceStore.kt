@@ -96,7 +96,12 @@ class LocalWorkspaceStore(context: Context) {
                 val old = savedByDate["${day}|${rule.id}"]
                 val time = old?.optString("time")?.takeIf(String::isNotBlank) ?: rule.time
                 val roles=setup.departments.flatMap { dept ->
-                    val isArchivedHistorical= !dept.active && day.isBefore(LocalDate.now()) && old?.optJSONArray("slots")?.let { slots -> (0 until it.length()).any { i -> slots.optJSONObject(i)?.optString("key")?.startsWith(if(dept.id=="mic") "" else "dept:${dept.id}_")==true } }==true
+                    val isArchivedHistorical = !dept.active && day.isBefore(LocalDate.now()) && old?.optJSONArray("slots")?.let { slots ->
+                        dept.roles.any { role ->
+                            val savedKey = if (dept.id == "mic") role.id else "dept:${dept.id}_${role.id}"
+                            (0 until slots.length()).any { i -> slots.optJSONObject(i)?.optString("key") == savedKey }
+                        }
+                    } == true
                     if(!dept.active && !isArchivedHistorical) emptyList() else dept.roles.mapNotNull { role ->
                     val key=if(dept.id=="mic") role.id else "dept:${dept.id}_${role.id}"
                     val isArchivedRoleHistorical = !role.active && day.isBefore(LocalDate.now()) && old?.optJSONArray("slots")?.let { slots -> (0 until slots.length()).any { i -> slots.optJSONObject(i)?.optString("key")==key } }==true
