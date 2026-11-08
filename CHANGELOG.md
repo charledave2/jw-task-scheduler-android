@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.37
+- Made the navigation drawer scrollable so all tools remain reachable in landscape and short-height screens.
+- Preserved the current screen and in-memory state when rotating the device, avoiding a splash-screen reload.
+
 ## 1.0.36
 - Fixed the Android shared-workspace API endpoint so sign-in loads congregation configuration correctly.
 - Added shared-workspace setup for groups, departments, assignment roles, and meeting days/times.
