@@ -740,12 +740,6 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     var modalDate by remember(month) { mutableStateOf<LocalDate?>(null) }
     val scope = rememberCoroutineScope()
     val darkMode = store.dark.value
-    fun dayPalette(day: Int): Pair<Color, Color> = when (day) {
-        4 -> if (darkMode) Color(0xFF80C8B5) to Color(0xFF29463E) else Color(0xFF28685D) to Color(0xFFE2F0EC) // Thursday · teal
-        6 -> if (darkMode) Color(0xFFE0B56A) to Color(0xFF4A3C25) else Color(0xFF8A6425) to Color(0xFFF7ECD7) // Saturday · amber
-        7 -> if (darkMode) Color(0xFF9AB9D8) to Color(0xFF2C3D50) else Color(0xFF496887) to Color(0xFFE7EEF7) // Sunday · blue
-        else -> if (darkMode) Color(0xFFA9C6A8) to Color(0xFF34473A) else Color(0xFF5C745F) to Color(0xFFEDF2EB)
-    }
     val firstDate = remember(month) { month.atDay(1) }
     val calendarCells = remember(month) {
         buildList<LocalDate?> {
@@ -766,7 +760,6 @@ private fun ScheduleCalendarScreen(store: AppStore) {
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
-            Text("MEETING CALENDAR", fontSize = 10.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
@@ -791,7 +784,6 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                             } else {
                                 val hasMeeting = !meetingsByDate[date].isNullOrEmpty()
                                 val selected = selectedDate == date
-                                val (dayAccent, dayContainer) = dayPalette(date.dayOfWeek.value)
                                 Column(
                                     Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(14.dp))
                                         .clickable {
@@ -801,10 +793,10 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
                                 ) {
-                                    Box(Modifier.size(30.dp).clip(CircleShape).background(when { selected && hasMeeting -> dayAccent; selected -> MaterialTheme.colorScheme.primary; hasMeeting -> dayContainer; else -> Color.Transparent }), contentAlignment = Alignment.Center) {
-                                        Text(date.dayOfMonth.toString(), fontSize = 12.sp, fontWeight = if (selected || hasMeeting) FontWeight.SemiBold else FontWeight.Normal, color = when { selected && hasMeeting -> if (darkMode) MaterialTheme.colorScheme.onPrimary else Color.White; selected -> MaterialTheme.colorScheme.onPrimary; hasMeeting -> dayAccent; else -> MaterialTheme.colorScheme.onSurface })
+                                    Box(Modifier.size(30.dp).clip(CircleShape).background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent), contentAlignment = Alignment.Center) {
+                                        Text(date.dayOfMonth.toString(), fontSize = 12.sp, fontWeight = if (selected || hasMeeting) FontWeight.SemiBold else FontWeight.Normal, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
                                     }
-                                    Box(Modifier.padding(top = 1.dp).size(5.dp).clip(CircleShape).background(if (hasMeeting) dayAccent else Color.Transparent))
+                                    Box(Modifier.padding(top = 1.dp).size(5.dp).clip(CircleShape).background(if (hasMeeting) MaterialTheme.colorScheme.primary else Color.Transparent))
                                 }
                             }
                         }
@@ -812,21 +804,15 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                 }
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 4.dp, top = 9.dp, bottom = 7.dp), horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf(4 to "Thu", 6 to "Sat", 7 to "Sun").forEach { (day, label) ->
-                val (accent, _) = dayPalette(day)
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    Box(Modifier.size(7.dp).clip(CircleShape).background(accent))
-                    Text(label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
+        Row(Modifier.padding(start = 5.dp, top = 9.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
+            Text("  Meeting scheduled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         selectedDate?.let { date ->
             val selectedMeetings = meetingsByDate[date].orEmpty()
-            val (selectedAccent, selectedContainer) = dayPalette(date.dayOfWeek.value)
-            Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = if (selectedMeetings.isNotEmpty()) selectedContainer else MaterialTheme.colorScheme.surfaceVariant), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(MaterialSymbol("calendar-days"), null, tint = if (selectedMeetings.isNotEmpty()) selectedAccent else MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
+                    Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
                         Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text(if (selectedMeetings.isEmpty()) "No meeting scheduled" else selectedMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
@@ -856,21 +842,19 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                         Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 12.dp, end = 9.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                Text("${dayMeetings.size} ${if (dayMeetings.size == 1) "meeting" else "meetings"} scheduled", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                Text(if (dayMeetings.isEmpty()) "No meetings" else dayMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                             }
                             IconButton(onClick = { modalDate = null }) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         Column(Modifier.fillMaxWidth().heightIn(max = dialogMaxHeight * .72f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                             dayMeetings.forEach { meeting ->
-                                val meetingDay = LocalDate.parse(meeting.date).dayOfWeek.value
-                                val (meetingAccent, meetingContainer) = dayPalette(meetingDay)
                                 Card(shape = RoundedCornerShape(15.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                                     Column {
-                                        Row(Modifier.fillMaxWidth().background(meetingContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(MaterialSymbol("calendar-days"), null, tint = meetingAccent, modifier = Modifier.size(18.dp))
+                                        Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.secondaryContainer).padding(horizontal = 13.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                             Column(Modifier.weight(1f).padding(start = 9.dp)) {
-                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = meetingAccent)
+                                                Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                                 Text(prettyTime(meeting.time), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                             }
                                         }
