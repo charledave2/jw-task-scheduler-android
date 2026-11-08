@@ -1083,7 +1083,8 @@ private fun PeopleScreen(store: AppStore) {
 private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
     val isNew = person == null
     var name by remember(person?.id) { mutableStateOf(person?.name ?: "") }
-    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf((person?.group ?: 1).coerceIn(1, localConfig?.groupCount ?: 9)) }
+    val groupLimit = (localConfig?.groupCount ?: 9).coerceAtLeast(1)
+    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf((person?.group ?: 1).coerceIn(1, groupLimit)) }
     var customDepartments by remember(person?.id, localConfig) { mutableStateOf(person?.customDepartmentIds ?: emptySet()) }
     var status by remember(person?.id) { mutableStateOf(person?.status ?: "active") }
     var noThursday by remember(person?.id) { mutableStateOf(person?.noThursday ?: false) }
@@ -1164,18 +1165,20 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                     OutlinedTextField(name, { name = it; error = null }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("GROUP", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Surface(onClick = { groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        Surface(onClick = { if ((localConfig?.groupCount ?: 9) > 0) groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
                                     Text(group.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(groupAvailability(group, noThursday), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(if(localConfig?.groupCount==0)"Groups not configured" else "Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(if(localConfig?.groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                if(localConfig?.groupCount!=0) {
+                                    Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                    Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
                             }
                         }
                     }
@@ -1222,6 +1225,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                             person?.gate ?: false, person?.remarks.orEmpty(), person?.allowDuplicate ?: false, person?.ignoreMeetingConflict ?: false,
                             person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal", person?.avatarUpdatedAt, customDepartments)
                         when {
+                            localConfig?.groupCount == 0 -> error = "Set up at least one group in Workspace settings before adding personnel."
                             name.trim().length < 2 -> error = "Enter a name with at least 2 characters."
                             !mic && !audio && !video && !platform && customDepartments.isEmpty() -> error = "Select at least one department role."
                             else -> { saving = true; error = null; scope.launch { try { onSave(updated); onDismiss() } catch (e: Exception) { error = e.message ?: "Could not save person." } finally { saving = false } } }
@@ -1919,7 +1923,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
         }
     }
     if (localConfigDialog && store.localMode && admin) LocalWorkspaceConfigDialog(
-        initial = store.localConfig.value ?: LocalWorkspaceConfig(9, emptyList(), emptyList()),
+        initial = store.localConfig.value ?: LocalWorkspaceConfig(0, emptyList(), emptyList()),
         onDismiss = { localConfigDialog=false },
         onSave = { value ->
             runCatching { store.saveLocalConfig(value) }.onSuccess {
@@ -1937,7 +1941,9 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
     var error by remember { mutableStateOf<String?>(null) }
     var newDepartment by remember { mutableStateOf("") }
     var newMeeting by remember { mutableStateOf("") }
-    var selectedDay by remember { mutableIntStateOf(4) }
+    var selectedDay by remember { mutableIntStateOf(0) }
+    var newMeetingTime by remember { mutableStateOf("") }
+    val context=LocalContext.current
     val scroll=rememberScrollState()
     Dialog(onDismissRequest=onDismiss, properties=DialogProperties(usePlatformDefaultWidth=false)) {
         Surface(Modifier.fillMaxWidth(.94f).widthIn(max=520.dp).fillMaxHeight(.88f), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
@@ -1951,24 +1957,27 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                     Text("GROUPS",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         Text("Number of groups",Modifier.weight(1f),fontSize=13.sp)
-                        OutlinedButton(onClick={if(groupCount>1)groupCount--},shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
-                        Text(groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
-                        OutlinedButton(onClick={if(groupCount<30)groupCount++},shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
+                        OutlinedButton(onClick={if(groupCount>0)groupCount--},enabled=groupCount>0,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
+                        Text(if(groupCount==0)"—" else groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
+                        OutlinedButton(onClick={if(groupCount<30)groupCount++},enabled=groupCount<30,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
                     }
+                    Text(if(groupCount==0)"No groups configured yet. Add the number your congregation uses." else "$groupCount numbered groups are available for personnel and meeting eligibility.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                     Text("DEPARTMENTS & ROLES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(departments.isEmpty()) Text("No departments yet. Add one below, then add the assignment roles it needs.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     departments.forEachIndexed { index, dept ->
                         Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
                             Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
                                 Row(verticalAlignment=Alignment.CenterVertically) {
                                     OutlinedTextField(dept.label,{ value -> departments=departments.toMutableList().also { it[index]=dept.copy(label=value) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Department")},shape=RoundedCornerShape(11.dp))
                                     IconButton(onClick={departments=departments.toMutableList().also { it[index]=dept.copy(active=!dept.active) }}) { Icon(MaterialSymbol(if(dept.active)"archive" else "unarchive"),if(dept.active)"Archive department" else "Restore department",tint=MaterialTheme.colorScheme.primary) }
-                                    
+                                    IconButton(onClick={departments=departments.filterNot { it.id==dept.id }}) { Icon(MaterialSymbol("delete"),"Delete department",tint=MaterialTheme.colorScheme.error) }
                                 }
                                 dept.roles.forEachIndexed { roleIndex, role ->
                                     Row(verticalAlignment=Alignment.CenterVertically) {
                                         OutlinedTextField(role.label,{ value -> val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(label=value) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } },modifier=Modifier.weight(1f),singleLine=true,label={Text("Assignment / role")},shape=RoundedCornerShape(10.dp))
                                         IconButton(onClick={ val updated=dept.roles.toMutableList().also { it[roleIndex]=role.copy(active=!role.active) }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol(if(role.active)"archive" else "unarchive"),if(role.active)"Archive role" else "Restore role",tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+                                        IconButton(onClick={ val updated=dept.roles.filterNot { it.id==role.id }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol("delete"),"Delete role",tint=MaterialTheme.colorScheme.error) }
                                     }
                                 }
                                 TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}","New assignment"); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
@@ -1982,12 +1991,14 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                     }
                     HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                     Text("MEETING DAYS & TIMES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(meetings.isEmpty()) Text("No meetings yet. Add a meeting below and choose its day and time.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     meetings.forEachIndexed { index, meeting ->
                         Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
                             Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
                                 Row(verticalAlignment=Alignment.CenterVertically) {
                                     OutlinedTextField(meeting.label,{v->meetings=meetings.toMutableList().also { it[index]=meeting.copy(label=v) }},modifier=Modifier.weight(1f),singleLine=true,label={Text("Meeting name")},shape=RoundedCornerShape(11.dp))
-                                    IconButton(onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(active=false) }}) { Icon(MaterialSymbol("delete"),"Archive meeting",tint=MaterialTheme.colorScheme.error) }
+                                    IconButton(onClick={meetings=meetings.toMutableList().also { it[index]=meeting.copy(active=!meeting.active) }}) { Icon(MaterialSymbol(if(meeting.active)"archive" else "unarchive"),if(meeting.active)"Archive meeting" else "Restore meeting",tint=MaterialTheme.colorScheme.primary) }
+                                    IconButton(onClick={meetings=meetings.filterNot { it.id==meeting.id }}) { Icon(MaterialSymbol("delete"),"Delete meeting",tint=MaterialTheme.colorScheme.error) }
                                 }
                                 Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                                     var dayMenu by remember(meeting.id) { mutableStateOf(false) }
@@ -2008,11 +2019,25 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                             }
                         }
                     }
+                    OutlinedTextField(newMeeting,{newMeeting=it},modifier=Modifier.fillMaxWidth(),singleLine=true,label={Text("New meeting name")},shape=RoundedCornerShape(11.dp))
                     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(newMeeting,{newMeeting=it},modifier=Modifier.weight(1f),singleLine=true,label={Text("New meeting")},shape=RoundedCornerShape(11.dp))
                         var dayMenu by remember { mutableStateOf(false) }
-                        Box { OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(dayName(selectedDay))}; DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}){(1..7).forEach{d->DropdownMenuItem(text={Text(dayName(d))},onClick={selectedDay=d;dayMenu=false})}} }
-                        FilledTonalButton(onClick={val label=newMeeting.trim();if(label.isNotBlank()){meetings=meetings+LocalMeetingRule("meeting_${System.currentTimeMillis()}",label,selectedDay,"09:00",(1..groupCount).toSet());newMeeting=""}},shape=RoundedCornerShape(11.dp)){Text("Add")}
+                        Box {
+                            OutlinedButton(onClick={dayMenu=true},shape=RoundedCornerShape(10.dp)){Text(if(selectedDay==0)"Choose day" else dayName(selectedDay))}
+                            DropdownMenu(expanded=dayMenu,onDismissRequest={dayMenu=false}){(1..7).forEach{d->DropdownMenuItem(text={Text(dayName(d))},onClick={selectedDay=d;dayMenu=false})}}
+                        }
+                        if(newMeetingTime.isBlank()) {
+                            OutlinedButton(onClick={TimePickerDialog(context,{_,h,m->newMeetingTime="%02d:%02d".format(h,m)},9,0,false).show()},shape=RoundedCornerShape(10.dp)){Text("Choose time")}
+                        } else {
+                            TimeInput(newMeetingTime){newMeetingTime=it}
+                        }
+                        FilledTonalButton(enabled=newMeeting.trim().isNotBlank() && selectedDay in 1..7 && newMeetingTime.isNotBlank(),onClick={
+                            val label=newMeeting.trim()
+                            if(label.isNotBlank() && selectedDay in 1..7 && newMeetingTime.isNotBlank()) {
+                                meetings=meetings+LocalMeetingRule("meeting_${System.currentTimeMillis()}",label,selectedDay,newMeetingTime,(1..groupCount).toSet())
+                                newMeeting=""; selectedDay=0; newMeetingTime=""
+                            }
+                        },shape=RoundedCornerShape(11.dp)){Text("Add")}
                     }
                     error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=11.sp) }
                     Text("Archived departments and removed meetings stop appearing in new schedules. Existing saved assignments remain in the local backup.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,lineHeight=15.sp)
@@ -2024,7 +2049,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                         val normalized=departments.map { d-> d.copy(label=d.label.trim(),roles=d.roles.map { it.copy(label=it.label.trim()) }) }
                         val cleanedMeetings=meetings.map { it.copy(label=it.label.trim(),eligibleGroups=it.eligibleGroups.filter { g->g in 1..groupCount }.toSet()) }
                         val config=LocalWorkspaceConfig(groupCount,normalized,cleanedMeetings)
-                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; cleanedMeetings.any { it.eligibleGroups.isEmpty() } -> error="Each meeting needs at least one eligible group."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
+                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; (groupCount>0 && cleanedMeetings.any { it.eligibleGroups.isEmpty() }) -> error="Choose at least one eligible group for each meeting."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
                     },shape=RoundedCornerShape(12.dp)){Text("Save setup")}
                 }
             }
