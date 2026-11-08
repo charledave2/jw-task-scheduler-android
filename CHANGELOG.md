@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.41
+- Fixed export preview sizing on short portrait and landscape screens.
+- Restored vertical scrolling while keeping pinch-to-zoom enabled.
+
+
 ## 1.0.40
 - Restored the calendar’s uniform theme colors for dates, meeting markers, and schedule details.
 - Removed the duplicate calendar section title and repeated meeting time text.
