@@ -342,7 +342,6 @@ fun SchedulerApp() {
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
-    var calendarOpen by remember { mutableStateOf(false) }
     val openCalendar: (LocalDate?) -> Unit = { requestedDate ->
         scope.launch {
             val date = requestedDate ?: LocalDate.now()
@@ -350,7 +349,7 @@ fun SchedulerApp() {
             if (store.month.value != requestedMonth) runCatching { store.changeMonth(requestedMonth) }
             store.calendarRequestedDate.value = date
             store.calendarShouldOpenDate.value = requestedDate != null
-            calendarOpen = true
+            store.page.value = "Schedule Calendar"
         }
     }
     LaunchedEffect(Unit) {
@@ -471,7 +470,7 @@ fun SchedulerApp() {
                     Box(Modifier.fillMaxSize().padding(padding)) {
                         when (page) {
                             "Home" -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
-                            "Schedule Calendar" -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
+                            "Schedule Calendar" -> ScheduleCalendarScreen(store)
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
@@ -490,7 +489,6 @@ fun SchedulerApp() {
                     }
                 }
             }
-            if (calendarOpen) ScheduleCalendarDialog(store, onDismiss = { calendarOpen = false })
         }
 
         if (assignmentTarget != null) {
@@ -730,7 +728,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
 }
 
 @Composable
-private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
+private fun ScheduleCalendarScreen(store: AppStore) {
     val month = store.month.value
     val meetings = store.data.value?.meetings.orEmpty().filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
     val meetingsByDate = remember(meetings) { meetings.groupBy { LocalDate.parse(it.date) } }
@@ -759,18 +757,14 @@ private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
         }
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-      BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
-       Surface(Modifier.fillMaxWidth(.96f).heightIn(max = maxHeight * .96f).padding(horizontal = 10.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
             Text("MEETING CALENDAR", fontSize = 10.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Schedule Calendar", fontSize = 22.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Spacer(Modifier.weight(1f))
                 IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
                 Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
                 IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
-                IconButton(onClick = onDismiss) { Icon(MaterialSymbol("close"), "Close calendar") }
             }
         }
         Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
@@ -830,9 +824,6 @@ private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
             Text("Choose a date. Meeting dates are marked in green.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (store.loading.value) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
-    }
-       }
-      }
     }
 
     modalDate?.let { date ->
