@@ -1,0 +1,61 @@
+name: Build and release Android APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/build.gradle.kts"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+      - name: Install Android SDK components
+        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Build APK and source archive
+        id: build
+        run: |
+          VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
+          VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts)
+          test -n "$VERSION_NAME"
+          test -n "$VERSION_CODE"
+          gradle --no-daemon :app:assembleDebug
+          mkdir -p release-assets
+          cp app/build/outputs/apk/debug/app-debug.apk "release-assets/jw-task-scheduler-$VERSION_NAME.apk"
+          zip -qr "release-assets/jw-task-scheduler-android-source-$VERSION_NAME.zip" . -x './.git/*' './app/build/*' './release-assets/*'
+          printf 'VERSION_NAME=%s\nVERSION_CODE=%s\n' "$VERSION_NAME" "$VERSION_CODE" >> "$GITHUB_OUTPUT"
+          cat > release-assets/notes.md <<NOTES
+          ## JW Task Scheduler $VERSION_NAME
+          - Android version code: $VERSION_CODE
+          - Source archive contains the Android project only.
+          - See CHANGELOG.md for feature details.
+          NOTES
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "v${{ steps.build.outputs.VERSION_NAME }}"
+          "release-assets/jw-task-scheduler-${{ steps.build.outputs.VERSION_NAME }}.apk"
+          "release-assets/jw-task-scheduler-android-source-${{ steps.build.outputs.VERSION_NAME }}.zip"
+          --repo "$GITHUB_REPOSITORY"
+          --title "JW Task Scheduler ${{ steps.build.outputs.VERSION_NAME }}"
+          --notes-file release-assets/notes.md
