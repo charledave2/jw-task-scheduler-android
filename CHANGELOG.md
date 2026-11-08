@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.39
+- Restored Schedule Calendar as a regular page.
+- Meeting dates open a centered, scrollable details modal.
+- Added distinct Thursday teal, Saturday amber, and Sunday muted blue calendar colors for light and dark themes.
+
 ## 1.0.38
 - Opened Schedule Calendar as a centered modal with safe-area spacing and scrolling on shorter screens.
 - Added safe drawing insets around the app so content avoids system bars.
