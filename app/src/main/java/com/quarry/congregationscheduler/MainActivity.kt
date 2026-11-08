@@ -409,10 +409,7 @@ fun SchedulerApp() {
                 gesturesEnabled = true,
                 drawerContent = {
                     ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(310.dp), drawerContainerColor = MaterialTheme.colorScheme.surface) {
-                        Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-      BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
-       Surface(Modifier.fillMaxWidth(.96f).heightIn(max = maxHeight * .96f).padding(horizontal = 10.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+                        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 12.dp)) {
                                 Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
                                 Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 15.sp); Text(store.data.value?.settings?.name ?: "Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
@@ -763,7 +760,10 @@ private fun ScheduleCalendarDialog(store: AppStore, onDismiss: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+      BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
+       Surface(Modifier.fillMaxWidth(.96f).heightIn(max = maxHeight * .96f).padding(horizontal = 10.dp), shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
             Text("MEETING CALENDAR", fontSize = 10.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Bold)
             Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
