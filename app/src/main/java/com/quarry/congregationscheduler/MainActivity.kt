@@ -1788,8 +1788,20 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         val cardRect = android.graphics.RectF(margin, y, width - margin, y + cardHeight)
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cream })
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = 4f })
-        val dayIndex=runCatching { LocalDate.parse(meeting.date).dayOfWeek.value }.getOrDefault(4)
-        val band = dayColors[dayIndex] ?: android.graphics.Color.rgb(75, 103, 78)
+        val labelDay=meetingTitle(meeting).trim().lowercase()
+        val dayIndex=runCatching { LocalDate.parse(meeting.date).dayOfWeek.value }.getOrElse {
+            when {
+                labelDay.startsWith("mon") -> 1
+                labelDay.startsWith("tue") -> 2
+                labelDay.startsWith("wed") -> 3
+                labelDay.startsWith("thu") -> 4
+                labelDay.startsWith("fri") -> 5
+                labelDay.startsWith("sat") -> 6
+                labelDay.startsWith("sun") -> 7
+                else -> 0
+            }
+        }
+        val band = dayColors[dayIndex] ?: teal
         canvas.drawRect(margin + 3f, y + 3f, width - margin - 3f, y + cardHeader, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = band })
         canvas.drawText("${meetingTitle(meeting).uppercase()} MEETING", margin + 22f, y + 47f, header)
         val meetingDate = runCatching { LocalDate.parse(meeting.date).format(DateTimeFormatter.ofPattern("MMM d, yyyy")) }.getOrDefault(meeting.date)
