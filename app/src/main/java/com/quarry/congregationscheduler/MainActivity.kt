@@ -1980,7 +1980,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                                         IconButton(onClick={ val updated=dept.roles.filterNot { it.id==role.id }; departments=departments.toMutableList().also { it[index]=dept.copy(roles=updated) } }) { Icon(MaterialSymbol("delete"),"Delete role",tint=MaterialTheme.colorScheme.error) }
                                     }
                                 }
-                                TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}","New assignment"); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
+                                TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}",""); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
                                 if(!dept.active) Text("Archived for new schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -2049,7 +2049,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, onDismiss:
                         val normalized=departments.map { d-> d.copy(label=d.label.trim(),roles=d.roles.map { it.copy(label=it.label.trim()) }) }
                         val cleanedMeetings=meetings.map { it.copy(label=it.label.trim(),eligibleGroups=it.eligibleGroups.filter { g->g in 1..groupCount }.toSet()) }
                         val config=LocalWorkspaceConfig(groupCount,normalized,cleanedMeetings)
-                        when { normalized.any { it.label.isBlank() } || cleanedMeetings.any { it.label.isBlank() } -> error="Names cannot be blank."; (groupCount>0 && cleanedMeetings.any { it.eligibleGroups.isEmpty() }) -> error="Choose at least one eligible group for each meeting."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
+                        when { normalized.any { it.label.isBlank() || it.roles.any { role->role.label.isBlank() } } || cleanedMeetings.any { it.label.isBlank() } -> error="Enter a name for every department, role, and meeting."; (groupCount>0 && cleanedMeetings.any { it.eligibleGroups.isEmpty() }) -> error="Choose at least one eligible group for each meeting."; else -> runCatching { config.also { require(it.departments.map { d->d.id }.distinct().size==it.departments.size); require(it.meetings.map { m->m.id }.distinct().size==it.meetings.size) } }.onSuccess { error=null;onSave(it);onDismiss() }.onFailure { error=it.message ?: "Could not save setup." } }
                     },shape=RoundedCornerShape(12.dp)){Text("Save setup")}
                 }
             }
