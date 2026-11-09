@@ -12,8 +12,8 @@ android {
         applicationId = "com.quarry.congregationscheduler"
         minSdk = 24
         targetSdk = 35
-        versionCode = 45
-        versionName = "1.0.41"
+        versionCode = 46
+        versionName = "1.0.42"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
     buildFeatures {

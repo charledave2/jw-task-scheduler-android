@@ -49,6 +49,26 @@ jobs:
           - Source archive contains the Android project only.
           - See CHANGELOG.md for feature details.
           NOTES
+      - name: Verify update signing certificate matches the latest release
+        run: |
+          APK_SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          RELEASE_JSON=$(mktemp)
+          curl --fail --silent --show-error --location \
+            https://api.github.com/repos/charledave2/jw-task-scheduler-android/releases/latest \
+            --output "$RELEASE_JSON"
+          PREVIOUS_APK=$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].browser_download_url // empty' "$RELEASE_JSON")
+          test -n "$PREVIOUS_APK" || { echo "Could not find the current release APK to compare signing certificates."; exit 1; }
+          curl --fail --silent --show-error --location "$PREVIOUS_APK" --output previous-release.apk
+          CURRENT_APK=app/build/outputs/apk/debug/app-debug.apk
+          PREVIOUS_CERT=$("$APK_SIGNER" verify --print-certs previous-release.apk | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
+          CURRENT_CERT=$("$APK_SIGNER" verify --print-certs "$CURRENT_APK" | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
+          test -n "$PREVIOUS_CERT" && test -n "$CURRENT_CERT"
+          if [ "$PREVIOUS_CERT" != "$CURRENT_CERT" ]; then
+            echo "Signing certificate changed. This APK cannot update the currently released app, so no release will be published."
+            echo "Configure the existing app signing key in GitHub Actions before building an in-app update."
+            exit 1
+          fi
+          echo "Signing certificate matches the current release."
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

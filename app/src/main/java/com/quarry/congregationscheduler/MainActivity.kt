@@ -113,6 +113,9 @@ class AppStore(context: android.content.Context) {
     val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
     val cloudConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
     val autoBackup = mutableStateOf(local.autoBackupInfo())
+    val availableUpdate = mutableStateOf<AppUpdate?>(null)
+    val updateDownloading = mutableStateOf(false)
+    val updateProgress = mutableFloatStateOf(0f)
     val localMode get() = mode.value == "local"
     val workspaceConfig get() = if (localMode) localConfig.value else cloudConfig.value
 
@@ -127,6 +130,28 @@ class AppStore(context: android.content.Context) {
     fun configureAutoBackupFolder(uri: Uri): String = local.configureAutoBackupFolder(uri).also { autoBackup.value = local.autoBackupInfo() }
     fun setAutoBackupEnabled(enabled: Boolean) { local.setAutoBackupEnabled(enabled); autoBackup.value = local.autoBackupInfo() }
     fun refreshAutoBackupInfo() { autoBackup.value = local.autoBackupInfo() }
+    suspend fun checkAppUpdate() {
+        val update = runCatching { AppUpdater.checkForUpdate() }.getOrNull()
+        val prefs = appContext.getSharedPreferences("app_update_preferences", android.content.Context.MODE_PRIVATE)
+        val dismissedTag = prefs.getString("dismissed_tag", null)
+        val dismissedAt = prefs.getLong("dismissed_at", 0L)
+        availableUpdate.value = update?.takeIf { it.tag != dismissedTag || System.currentTimeMillis() - dismissedAt >= 24 * 60 * 60 * 1000L }
+    }
+    fun dismissAppUpdate() {
+        val update = availableUpdate.value ?: return
+        appContext.getSharedPreferences("app_update_preferences", android.content.Context.MODE_PRIVATE).edit()
+            .putString("dismissed_tag", update.tag).putLong("dismissed_at", System.currentTimeMillis()).apply()
+        availableUpdate.value = null
+    }
+    suspend fun downloadAndInstallUpdate(context: android.content.Context) {
+        val update = availableUpdate.value ?: return
+        updateDownloading.value = true
+        updateProgress.value = 0f
+        try {
+            val apk = AppUpdater.download(context, update) { updateProgress.value = it }
+            AppUpdater.install(context, apk)
+        } finally { updateDownloading.value = false }
+    }
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
     fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
@@ -341,6 +366,12 @@ fun SchedulerApp() {
                 .onFailure { snackbar.showSnackbar(it.message ?: "Could not enable automatic backup.") }
         }
     }
+    val installPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (AppUpdater.canInstallPackages(context)) scope.launch {
+            runCatching { store.downloadAndInstallUpdate(context) }
+                .onFailure { snackbar.showSnackbar(it.message ?: "Could not download the update.") }
+        }
+    }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val openCalendar: (LocalDate?) -> Unit = { requestedDate ->
@@ -354,6 +385,7 @@ fun SchedulerApp() {
         }
     }
     LaunchedEffect(Unit) {
+        launch { store.checkAppUpdate() }
         try { store.initialize() } finally { delay(450); showSplash = false }
     }
     LaunchedEffect(store.data.value?.people?.map { it.id to it.avatarUpdatedAt }) {
@@ -468,7 +500,24 @@ fun SchedulerApp() {
                     },
                     snackbarHost = { SnackbarHost(snackbar) }
                 ) { padding ->
-                    Box(Modifier.fillMaxSize().padding(padding)) {
+                    Column(Modifier.fillMaxSize().padding(padding)) {
+                      store.availableUpdate.value?.let { update ->
+                        AppUpdateBanner(
+                            update = update,
+                            downloading = store.updateDownloading.value,
+                            progress = store.updateProgress.floatValue,
+                            onUpdate = {
+                                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O && !AppUpdater.canInstallPackages(context)) {
+                                    installPermissionLauncher.launch(Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+                                } else scope.launch {
+                                    runCatching { store.downloadAndInstallUpdate(context) }
+                                        .onFailure { snackbar.showSnackbar(it.message ?: "Could not download the update.") }
+                                }
+                            },
+                            onLater = { store.dismissAppUpdate() }
+                        )
+                      }
+                      Box(Modifier.weight(1f).fillMaxWidth()) {
                         when (page) {
                             "Home" -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                             "Schedule Calendar" -> ScheduleCalendarScreen(store)
@@ -487,6 +536,7 @@ fun SchedulerApp() {
                             else -> HomeScreen(store, onGo = { store.page.value = it }, onOpenCalendar = openCalendar)
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = MaterialTheme.colorScheme.primary)
+                      }
                     }
                 }
             }
@@ -512,6 +562,38 @@ fun SchedulerApp() {
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         ) }
       }
+    }
+}
+
+@Composable
+private fun AppUpdateBanner(
+    update: AppUpdate,
+    downloading: Boolean,
+    progress: Float,
+    onUpdate: () -> Unit,
+    onLater: () -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(start = 13.dp, end = 7.dp, top = 10.dp, bottom = 9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(MaterialSymbol("download"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(21.dp))
+                Column(Modifier.weight(1f).padding(start = 9.dp, end = 5.dp)) {
+                    Text("Update ${update.version} is available", fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    val note = update.notes.lineSequence().map { it.trim().removePrefix("-").trim() }.firstOrNull { it.isNotBlank() }.orEmpty()
+                    Text(if (downloading) "Downloading update… ${(progress * 100).toInt()}%" else note.ifBlank { "Download and install the latest release." }, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+                }
+                Button(onClick = onUpdate, enabled = !downloading, contentPadding = PaddingValues(horizontal = 11.dp, vertical = 6.dp), modifier = Modifier.height(34.dp)) {
+                    if (downloading) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp) else Text("Update", fontSize = 11.sp)
+                }
+                IconButton(onClick = onLater, enabled = !downloading, modifier = Modifier.size(34.dp)) { Icon(MaterialSymbol("close"), "Later", modifier = Modifier.size(17.dp)) }
+            }
+            if (downloading) LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp).height(3.dp).clip(CircleShape))
+        }
     }
 }
 
@@ -759,15 +841,16 @@ private fun ScheduleCalendarScreen(store: AppStore) {
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
+        Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
+            Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
+                Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
+            }
+        }
         Card(shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                Row(Modifier.fillMaxWidth().padding(bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.minusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-left"), "Previous month") }
-                    Spacer(Modifier.weight(1f))
-                    Text(month.format(DateTimeFormatter.ofPattern("MMM yyyy")), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.weight(1f))
-                    IconButton(onClick = { scope.launch { runCatching { store.changeMonth(month.plusMonths(1)) } } }) { Icon(MaterialSymbol("chevron-right"), "Next month") }
-                }
+            Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT").forEach { day ->
                         Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(day, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -1648,8 +1731,8 @@ private fun ExportScreen(store: AppStore) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Preview", fontSize = 14.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Text("1080 px portrait", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             Text("Pinch to zoom · ${((zoom * 100).toInt())}%", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             // Keep the poster inside a predictable viewport on short landscape screens.
-            // Pan gestures were previously consumed by transformable even though pan was ignored,
-            // preventing the surrounding page from receiving vertical scrolls.
+            // Pan gestures were previously consumed by transformable even though pan was
+            // ignored, preventing the surrounding page from receiving vertical scrolls.
             Box(
                 Modifier
                     .fillMaxWidth()

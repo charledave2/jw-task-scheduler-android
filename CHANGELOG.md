@@ -1,16 +1,19 @@
 # Changelog
 
-## 1.0.41
-- Moved the month controls into the calendar card to use the empty space more efficiently.
+## 1.0.42
+- Added an in-app update banner that checks public GitHub Releases.
+- Added verified APK download and Android installer handoff.
+- Added a signing-certificate check to prevent publishing an update that cannot replace the current app.
 
 ## 1.0.41
 - Fixed export preview sizing on short portrait and landscape screens.
 - Restored vertical scrolling while keeping pinch-to-zoom enabled.
 
-
 ## 1.0.40
 - Restored the calendar’s uniform theme colors for dates, meeting markers, and schedule details.
 - Removed the duplicate calendar section title and repeated meeting time text.
+- Constrained the export preview to a responsive viewport so it stays visible on short landscape screens.
+- Disabled unused preview panning so vertical page scrolling works while pinch-to-zoom remains available.
 
 ## 1.0.39
 - Restored Schedule Calendar as a regular page.
