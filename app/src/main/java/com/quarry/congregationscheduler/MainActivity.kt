@@ -610,7 +610,7 @@ fun SchedulerApp() {
                         )
                       }
         }
-        if (assignmentTarget != null) {
+        if (assignmentTarget != null && store.canOpenPage("Manage Schedule")) {
             val (meeting, slot) = assignmentTarget!!
             val occupiedOnDate = store.data.value?.meetings.orEmpty()
                 .filter { it.date == meeting.date }
@@ -826,7 +826,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         }
         Spacer(Modifier.height(18.dp))
     }
-    selectedDepartment?.let { (name, members) ->
+    if(store.canOpenPage("People Directory")) selectedDepartment?.let { (name, members) ->
         DepartmentMembersDialog(name, members, store, onDismiss = { selectedDepartment = null })
     }
 }
