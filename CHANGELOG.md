@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.44
+- Fixed assignment updates so legacy same-day duplicates do not block unrelated assignments or clearing a position.
+- Moved the profile shortcut into the navigation drawer above Sign out.
+- Replaced the centered profile dialog with a compact popup anchored to the profile shortcut.
+
+
 ## 1.0.43
 - Enlarged the Export Studio preview on first open while keeping it responsive on shorter screens.
 - Improved share button icon visibility in light and dark mode using Material You two-tone icons and theme-aware contrast.
