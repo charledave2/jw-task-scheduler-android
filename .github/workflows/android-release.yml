@@ -56,13 +56,18 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "release-assets/jw-task-scheduler-$VERSION_NAME.apk"
           zip -qr "release-assets/jw-task-scheduler-android-source-$VERSION_NAME.zip" . -x './.git/*' './app/build/*' './release-assets/*'
           printf 'VERSION_NAME=%s\nVERSION_CODE=%s\n' "$VERSION_NAME" "$VERSION_CODE" >> "$GITHUB_OUTPUT"
-          cat > release-assets/notes.md <<NOTES
-          ## JW Task Scheduler $VERSION_NAME
-          - Android version code: $VERSION_CODE
-          - Source archive contains the Android project only.
-          $(if [ "$VERSION_NAME" = "1.0.42" ]; then printf '%s\n' '- First release signed with the permanent key. Existing users must export a .bcdv backup, uninstall the old app, install this APK, then restore the backup.'; fi)
-          - See CHANGELOG.md for feature details.
-          NOTES
+          python3 - "$VERSION_NAME" <<'PY'
+          import pathlib, sys
+          version = sys.argv[1]
+          lines = pathlib.Path("CHANGELOG.md").read_text().splitlines()
+          header = f"## {version}"
+          start = lines.index(header) + 1
+          end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+          changes = "\n".join(lines[start:end]).strip()
+          if not changes:
+              raise SystemExit("Release changelog is empty.")
+          pathlib.Path("release-assets/notes.md").write_text(changes + "\n")
+          PY
       - name: Verify update signing certificate matches the latest release
         env:
           VERSION_NAME: ${{ steps.build.outputs.VERSION_NAME }}
