@@ -675,18 +675,31 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
                 Text("Keep schedules, people, and reviews on this device. No Cloudflare account or internet connection is required. You can export a backup in Settings.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
                 if (creating) {
                     OutlinedTextField(name, { name = it }, label = { Text("Congregation name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
-                    Button(onClick = { onLocal(name.trim()) }, enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(13.dp)) { Text("Create local workspace") }
-                } else OutlinedButton(onClick = { creating = true }, modifier = Modifier.fillMaxWidth().height(46.dp), shape = RoundedCornerShape(13.dp)) { Text("Set up local workspace") }
+                    Button(onClick = { onLocal(name.trim()) }, enabled = name.isNotBlank(), modifier = Modifier.fillMaxWidth().height(48.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
+                        Icon(MaterialSymbol("database"), null, Modifier.size(19.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Create local workspace")
+                    }
+                } else {
+                    OutlinedButton(onClick = { creating = true }, modifier = Modifier.fillMaxWidth().height(46.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
+                        Icon(MaterialSymbol("database"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Set up local workspace")
+                    }
+                }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text("Shared sync", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Text("Sign in to a shared workspace to sync this congregation across devices. Your administrator provides the account.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
-                TextButton(onClick = onShared, modifier = Modifier.align(Alignment.End)) { Text("Connect shared workspace") }
+                FilledTonalButton(onClick = onShared, modifier = Modifier.fillMaxWidth().height(46.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
+                    Icon(MaterialSymbol("cloud"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Connect shared workspace")
+                }
             }
         }
         Text("Local data stays on this device until you share a backup.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 14.dp))
     }
 }
-
 @Composable
 private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, String) -> Unit, onBackToSetup: () -> Unit) {
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
@@ -760,9 +773,24 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, month: YearMonth, store: AppStore) {
     val options = store.workspaceConfig?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
     var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "mic") }
+    var period by remember { mutableStateOf("Monthly") }
+    var loadingOverall by remember { mutableStateOf(false) }
     val label = options.firstOrNull { it.first == department }?.second ?: "Department"
 
-    val ranking = reviews.filter { it.department == department && it.status != "excused" }
+    LaunchedEffect(period, store.allTaskReviews.value) {
+        if (period == "Overall" && store.allTaskReviews.value == null) {
+            loadingOverall = true
+            runCatching { store.loadAllTaskReviews() }
+            loadingOverall = false
+        }
+    }
+
+    val periodReviews = if (period == "Overall") {
+        store.allTaskReviews.value.orEmpty()
+    } else {
+        reviews.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
+    }
+    val ranking = periodReviews.filter { it.department == department && it.status != "excused" }
         .groupBy { it.personId }
         .mapNotNull { (id, rows) ->
             val person = people.firstOrNull { it.id == id } ?: return@mapNotNull null
@@ -771,17 +799,22 @@ private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, mo
             if (total == 0) null else Triple(person, done, done * 100 / total)
         }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
     Column {
-        SectionTitle("Top performer", month.format(DateTimeFormatter.ofPattern("MMM yyyy"))) { }
+        SectionTitle("Top performer", if (period == "Overall") "Overall" else month.format(DateTimeFormatter.ofPattern("MMM yyyy"))) { }
         Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(13.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    options.forEach { (key, text) ->
-                        FilterPill(text, department == key) { department = key }
-                    }
+                    FilterPill("Overall", period == "Overall") { period = "Overall" }
+                    FilterPill("Monthly", period == "Monthly") { period = "Monthly" }
+                }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    options.forEach { (key, text) -> FilterPill(text, department == key) { department = key } }
                 }
                 val top = ranking.firstOrNull()
-                if (top == null) Text("No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
-                else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (loadingOverall && period == "Overall") {
+                    Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+                } else if (top == null) {
+                    Text("No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+                } else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
                     LaunchedEffect(top.first.id, top.first.avatarUpdatedAt) { if (top.first.avatarUpdatedAt != null) store.loadPersonPhoto(top.first.id) }
                     Box(Modifier.size(52.dp), contentAlignment = Alignment.BottomEnd) {
                         Avatar(top.first.name, 48.dp, store.personPhotos.value[top.first.id])
@@ -797,7 +830,6 @@ private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, mo
         }
     }
 }
-
 private fun timeGreeting(): String = when (LocalTime.now().hour) {
     in 5..11 -> "Good morning"
     in 12..17 -> "Good afternoon"
@@ -2692,6 +2724,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "unarchive" -> Icons.TwoTone.Unarchive
     "add" -> Icons.TwoTone.Add
     "database" -> Icons.TwoTone.Storage
+    "cloud" -> Icons.TwoTone.Cloud
     "upload" -> Icons.TwoTone.Upload
     "tune", "settings", "settings-2", "sliders-horizontal" -> Icons.TwoTone.Tune
     "apartment", "building", "building-2" -> Icons.TwoTone.Apartment
