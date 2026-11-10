@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.51
+- Replaced the Accounts & Access list with a responsive profile grid and administrator badge.
+- Added a centered account actions dialog with role and account status controls.
+- Replaced the Add account text action with a Material You two-tone icon button.
+
+
 ## 1.0.50
 - Replaced lilac input outlines with green-gray theme colors in light and dark mode.
 - Added two-tone icons to the Sign In and Back to setup buttons.
