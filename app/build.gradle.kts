@@ -4,6 +4,11 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val releaseStoreFile = System.getenv("ANDROID_RELEASE_STORE_FILE")
+val releaseStorePassword = System.getenv("ANDROID_RELEASE_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("ANDROID_RELEASE_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("ANDROID_RELEASE_KEY_PASSWORD")
+
 android {
     namespace = "com.quarry.congregationscheduler"
     compileSdk = 35
@@ -15,6 +20,19 @@ android {
         versionCode = 46
         versionName = "1.0.42"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
+    }
+    signingConfigs {
+        create("release") {
+            if (!releaseStoreFile.isNullOrBlank()) storeFile = file(releaseStoreFile)
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
+        }
+    }
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
     buildFeatures {
         compose = true
