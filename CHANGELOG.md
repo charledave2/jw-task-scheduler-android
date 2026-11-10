@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.49
+- Overall Top Performer now uses the full review history in local and shared workspaces.
+- Shared review history loads through one authenticated API request.
+
+
 ## 1.0.48
 - Added centered Material You two-tone buttons to Initial Setup, including a cloud icon for shared workspace.
 - Added Overall and Monthly modes to the Home page Top Performer card.

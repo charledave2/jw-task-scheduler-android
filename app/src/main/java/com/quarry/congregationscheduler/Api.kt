@@ -166,8 +166,9 @@ class ApiClient(context: Context) {
         ScheduleData(people,meetings,settings)
     }
 
-    suspend fun loadTaskReviews(month: YearMonth = YearMonth.now()): List<TaskReview> = withContext(Dispatchers.IO) {
-        val rows=request("api/workspace/task-reviews?month=$month").optJSONArray("reviews") ?: JSONArray()
+    suspend fun loadTaskReviews(month: YearMonth = YearMonth.now(), allHistory: Boolean = false): List<TaskReview> = withContext(Dispatchers.IO) {
+        val endpoint = if (allHistory) "api/workspace/task-reviews?all=1" else "api/workspace/task-reviews?month=$month"
+        val rows=request(endpoint).optJSONArray("reviews") ?: JSONArray()
         (0 until rows.length()).map { i -> rows.getJSONObject(i).let { r -> TaskReview(
             r.optString("meeting_date"),r.optString("meeting_type"),r.optString("department"),r.optString("slot_key"),
             r.optString("person_id"),r.optString("person_name"),r.optString("status"),r.optString("note")

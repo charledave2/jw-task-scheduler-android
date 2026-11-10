@@ -64,9 +64,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.delay
@@ -205,14 +202,7 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun loadAllTaskReviews(forceRefresh: Boolean = false): List<TaskReview> {
         if (!forceRefresh) allTaskReviews.value?.let { return it }
-        if (localMode) return local.allReviews().also { allTaskReviews.value = it }
-        val end = YearMonth.now()
-        val months = (0..35).map { end.minusMonths(it.toLong()) }
-        val loaded = coroutineScope {
-            months.chunked(6).flatMap { batch ->
-                batch.map { month -> async { api.loadTaskReviews(month) } }.awaitAll()
-            }.flatten()
-        }
+        val loaded = if (localMode) local.allReviews() else api.loadTaskReviews(allHistory = true)
         allTaskReviews.value = loaded
         return loaded
     }
