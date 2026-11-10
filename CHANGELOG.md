@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.54
+- Emphasized the signed-in account role in bold uppercase beside the profile photo at the bottom of navigation.
+- Added Change photo and Rename buttons to the profile menu, and moved Sign out inside it.
+- Hid Workspace and Data & Backup from Viewer settings.
+- Kept profile controls scrollable with keyboard-aware spacing and a bottom safe area.
+
 ## 1.0.53
 - Centered update dialog now shows release changes with Material Two-Tone icons and Update/Later buttons.
 - Choosing Later hides the prompt for the current foreground session; it returns on the next app open while an update is available.
