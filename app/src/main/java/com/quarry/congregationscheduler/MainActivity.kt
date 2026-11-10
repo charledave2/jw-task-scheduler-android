@@ -283,7 +283,7 @@ class AppStore(context: android.content.Context) {
         data.value = data.value?.copy(settings = saved) ?: api.loadSchedule(month.value)
         load()
     }
-    suspend fun saveProfile(name: String) { if (localMode) { preferences.edit().putString("local_display_name", name).apply(); user.value = user.value?.copy(displayName = name) } else user.value = api.saveProfile(name) }
+    suspend fun saveProfile(name: String) { if (localMode) { preferences.edit().putString("local_display_name", name).apply(); user.value = user.value?.copy(displayName = name) } else { val updated = api.saveProfile(name); user.value = user.value?.copy(displayName = updated.displayName) } }
     suspend fun saveAvatar(uri: Uri) {
         val bytes = withContext(Dispatchers.IO) { encodeAvatar(uri) }
         if (localMode) { local.savePhoto("local-admin", bytes); refreshAvatar() } else api.uploadAvatar(bytes)
