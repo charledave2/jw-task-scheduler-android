@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.56
+- Updated the app icon, animated splash logo, login and setup branding to the approved forest-green calendar, people and checkmark design.
+- Replaced cloudy transparent patches with fully opaque artwork and generated all launcher density sizes.
+- Rounded the animated splash tile to match the new app branding.
+
 ## 1.0.55
 - Made the profile menu more compact with borderless Change photo and Rename actions side by side.
 - Reduced profile menu spacing while retaining Two-Tone icons and comfortable touch targets.
