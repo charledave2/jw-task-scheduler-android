@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.53
+- Centered update dialog now shows release changes with Material Two-Tone icons and Update/Later buttons.
+- Choosing Later hides the prompt for the current foreground session; it returns on the next app open while an update is available.
+- Administrators can choose visible pages for each managed account from Page access.
+- Hidden pages are removed from navigation and home shortcuts, with access refreshed when the app resumes.
+- Existing role permissions remain in effect; Home and administrator access remain available.
+
 ## 1.0.52
 - Added administrator password reset for managed accounts.
 - Display uploaded account photos in the account grid and modal, with initials fallback.

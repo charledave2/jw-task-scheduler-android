@@ -44,7 +44,7 @@ data class Meeting(val date: String, val type: String, val time: String, val slo
 data class UserInfo(val id: String, val username: String, val displayName: String, val role: String, val permissions: String)
 data class WorkspaceSettings(val name: String, val thursday: String, val saturday: String, val sunday: String)
 data class ScheduleData(val people: List<Person>, val meetings: List<Meeting>, val settings: WorkspaceSettings)
-data class ManagedUser(val id: String, val username: String, val displayName: String, val role: String, val active: Boolean, val hasAvatar: Boolean = false, val avatarUpdatedAt: String = "")
+data class ManagedUser(val id: String, val username: String, val displayName: String, val role: String, val active: Boolean, val hasAvatar: Boolean = false, val avatarUpdatedAt: String = "", val permissions: String = "{}")
 data class TaskReview(val date: String, val type: String, val department: String, val slotKey: String, val personId: String, val personName: String, val status: String, val note: String = "")
 
 class ApiClient(context: Context) {
@@ -249,7 +249,7 @@ class ApiClient(context: Context) {
                 is String -> value.equals("true", ignoreCase = true) || value == "1"
                 else -> true
             }
-            ManagedUser(row.optString("id"), row.optString("username"), row.optString("display_name"), row.optString("role"), active, row.optInt("has_avatar", 0) != 0, row.optString("avatar_updated_at", ""))
+            ManagedUser(row.optString("id"), row.optString("username"), row.optString("display_name"), row.optString("role"), active, row.optInt("has_avatar", 0) != 0, row.optString("avatar_updated_at", ""), row.optString("permissions_json", "{}"))
         } }
     }
 
@@ -266,6 +266,10 @@ class ApiClient(context: Context) {
 
     suspend fun setUserRole(user: ManagedUser, role: String) = withContext(Dispatchers.IO) {
         request("api/users", "PUT", JSONObject().put("id", user.id.toInt()).put("role", role).put("is_active", user.active))
+    }
+
+    suspend fun savePageAccess(user: ManagedUser, pages: Set<String>) = withContext(Dispatchers.IO) {
+        request("api/users", "PUT", JSONObject().put("id",user.id.toInt()).put("pages",JSONArray(pages.toList())))
     }
 
     suspend fun resetUserPassword(user: ManagedUser, password: String, confirm: String) = withContext(Dispatchers.IO) {
@@ -340,4 +344,5 @@ class ApiClient(context: Context) {
 }
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
+
 
