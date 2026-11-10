@@ -42,6 +42,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
@@ -132,16 +133,10 @@ class AppStore(context: android.content.Context) {
     fun setAutoBackupEnabled(enabled: Boolean) { local.setAutoBackupEnabled(enabled); autoBackup.value = local.autoBackupInfo() }
     fun refreshAutoBackupInfo() { autoBackup.value = local.autoBackupInfo() }
     suspend fun checkAppUpdate() {
-        val update = runCatching { AppUpdater.checkForUpdate() }.getOrNull()
-        val prefs = appContext.getSharedPreferences("app_update_preferences", android.content.Context.MODE_PRIVATE)
-        val dismissedTag = prefs.getString("dismissed_tag", null)
-        val dismissedAt = prefs.getLong("dismissed_at", 0L)
-        availableUpdate.value = update?.takeIf { it.tag != dismissedTag || System.currentTimeMillis() - dismissedAt >= 24 * 60 * 60 * 1000L }
+        availableUpdate.value = runCatching { AppUpdater.checkForUpdate() }.getOrNull()
     }
     fun dismissAppUpdate() {
-        val update = availableUpdate.value ?: return
-        appContext.getSharedPreferences("app_update_preferences", android.content.Context.MODE_PRIVATE).edit()
-            .putString("dismissed_tag", update.tag).putLong("dismissed_at", System.currentTimeMillis()).apply()
+        // Hide for this foreground session only. The next resume checks GitHub again.
         availableUpdate.value = null
     }
     suspend fun downloadAndInstallUpdate(context: android.content.Context) {
@@ -385,8 +380,17 @@ fun SchedulerApp() {
             store.page.value = "Schedule Calendar"
         }
     }
+    DisposableEffect(context) {
+        val lifecycleOwner = context as? androidx.lifecycle.LifecycleOwner
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                scope.launch { store.checkAppUpdate() }
+            }
+        }
+        lifecycleOwner?.lifecycle?.addObserver(observer)
+        onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
+    }
     LaunchedEffect(Unit) {
-        launch { store.checkAppUpdate() }
         try { store.initialize() } finally { delay(450); showSplash = false }
     }
     LaunchedEffect(store.data.value?.people?.map { it.id to it.avatarUpdatedAt }) {
@@ -2277,8 +2281,17 @@ private fun ProfileDialog(
     onPhotoSelected: (Uri) -> Unit,
     onRemovePhoto: () -> Unit
 ) {
-    var name by remember(user.id) { mutableStateOf(user.displayName) }
+    var name by remember(user.id, user.displayName) { mutableStateOf(user.displayName) }
+    var editingName by remember(user.id) { mutableStateOf(false) }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(onPhotoSelected) }
+    LaunchedEffect(editingName) {
+        if (editingName) {
+            focusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
@@ -2290,29 +2303,67 @@ private fun ProfileDialog(
         shadowElevation = 8.dp,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(user.displayName, 42.dp, photo)
-                Spacer(Modifier.width(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(user.displayName, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(roleLabel(user.role), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Box(
+                    Modifier.size(46.dp).clickable(onClickLabel = "Upload profile photo") { picker.launch("image/*") },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Avatar(user.displayName, 46.dp, photo)
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).size(19.dp).clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(MaterialSymbol("upload"), "Upload profile photo", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(11.dp))
+                    }
                 }
-                IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) { Icon(MaterialSymbol("close"), "Close profile", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
-            }
-            OutlinedTextField(name, { name = it }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 7.dp)) {
-                    Icon(MaterialSymbol("camera"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text(if (photo == null) "Add photo" else "Change photo", fontSize = 11.sp, maxLines = 1)
+                Spacer(Modifier.width(9.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    if (editingName) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = name,
+                            onValueChange = { name = it },
+                            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.titleSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurface,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        )
+                    } else {
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
+                                .clickable(onClickLabel = "Edit profile name") { editingName = true }
+                                .padding(vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(name.ifBlank { user.displayName }, modifier = Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Icon(MaterialSymbol("edit"), "Edit name", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    Text(roleLabel(user.role), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 if (photo != null) {
-                    Spacer(Modifier.width(4.dp))
-                    IconButton(onClick = onRemovePhoto) { Icon(MaterialSymbol("trash-2"), "Remove photo", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(19.dp)) }
+                    IconButton(onClick = onRemovePhoto, modifier = Modifier.size(30.dp)) {
+                        Icon(MaterialSymbol("trash-2"), "Remove profile photo", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                    }
+                }
+                IconButton(onClick = { keyboardController?.hide(); onDismiss() }, modifier = Modifier.size(30.dp)) {
+                    Icon(MaterialSymbol("close"), "Close profile", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onDismiss) { Text("Cancel") }
-                Button(onClick = { onSave(name.trim()) }, shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) { Text("Save") }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(
+                    onClick = { editingName = false; keyboardController?.hide(); onDismiss() },
+                    modifier = Modifier.weight(1f)
+                ) { Text("Cancel") }
+                Button(
+                    onClick = { editingName = false; keyboardController?.hide(); onSave(name.trim()) },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(11.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                ) { Text("Save") }
             }
         }
     }
@@ -2655,6 +2706,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "filter_list", "filter" -> Icons.TwoTone.FilterList
     "delete", "trash-2" -> Icons.TwoTone.Delete
     "share", "share-2" -> Icons.TwoTone.Share
+    "edit", "edit-note" -> Icons.TwoTone.Edit
     "auto_awesome", "wand-sparkles" -> Icons.TwoTone.AutoAwesome
     "lock", "lock-keyhole" -> Icons.TwoTone.Lock
     "dark_mode", "moon" -> Icons.TwoTone.DarkMode
