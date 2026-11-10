@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "app/build.gradle.kts"
+      - ".github/workflows/android-release.yml"
   workflow_dispatch:
 
 permissions:
@@ -31,25 +32,40 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.10.2"
+      - name: Decode permanent release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_BASE64" || { echo "Missing Android release signing secrets. Add the four ANDROID_RELEASE_* repository secrets before publishing."; exit 1; }
+          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/jw-task-scheduler-release.jks"
+          echo "ANDROID_RELEASE_STORE_FILE=$RUNNER_TEMP/jw-task-scheduler-release.jks" >> "$GITHUB_ENV"
       - name: Build APK and source archive
         id: build
+        env:
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
+          test -n "$ANDROID_RELEASE_STORE_PASSWORD" -a -n "$ANDROID_RELEASE_KEY_ALIAS" -a -n "$ANDROID_RELEASE_KEY_PASSWORD"
           VERSION_NAME=$(sed -n 's/.*versionName = "\([^"]*\)".*/\1/p' app/build.gradle.kts)
           VERSION_CODE=$(sed -n 's/.*versionCode = \([0-9]*\).*/\1/p' app/build.gradle.kts)
           test -n "$VERSION_NAME"
           test -n "$VERSION_CODE"
-          gradle --no-daemon :app:assembleDebug
+          gradle --no-daemon :app:assembleRelease
           mkdir -p release-assets
-          cp app/build/outputs/apk/debug/app-debug.apk "release-assets/jw-task-scheduler-$VERSION_NAME.apk"
+          cp app/build/outputs/apk/release/app-release.apk "release-assets/jw-task-scheduler-$VERSION_NAME.apk"
           zip -qr "release-assets/jw-task-scheduler-android-source-$VERSION_NAME.zip" . -x './.git/*' './app/build/*' './release-assets/*'
           printf 'VERSION_NAME=%s\nVERSION_CODE=%s\n' "$VERSION_NAME" "$VERSION_CODE" >> "$GITHUB_OUTPUT"
           cat > release-assets/notes.md <<NOTES
           ## JW Task Scheduler $VERSION_NAME
           - Android version code: $VERSION_CODE
           - Source archive contains the Android project only.
+          $(if [ "$VERSION_NAME" = "1.0.42" ]; then printf '%s\n' '- First release signed with the permanent key. Existing users must export a .bcdv backup, uninstall the old app, install this APK, then restore the backup.'; fi)
           - See CHANGELOG.md for feature details.
           NOTES
       - name: Verify update signing certificate matches the latest release
+        env:
+          VERSION_NAME: ${{ steps.build.outputs.VERSION_NAME }}
         run: |
           APK_SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           RELEASE_JSON=$(mktemp)
@@ -59,16 +75,20 @@ jobs:
           PREVIOUS_APK=$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].browser_download_url // empty' "$RELEASE_JSON")
           test -n "$PREVIOUS_APK" || { echo "Could not find the current release APK to compare signing certificates."; exit 1; }
           curl --fail --silent --show-error --location "$PREVIOUS_APK" --output previous-release.apk
-          CURRENT_APK=app/build/outputs/apk/debug/app-debug.apk
+          CURRENT_APK=app/build/outputs/apk/release/app-release.apk
           PREVIOUS_CERT=$("$APK_SIGNER" verify --print-certs previous-release.apk | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
           CURRENT_CERT=$("$APK_SIGNER" verify --print-certs "$CURRENT_APK" | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
           test -n "$PREVIOUS_CERT" && test -n "$CURRENT_CERT"
           if [ "$PREVIOUS_CERT" != "$CURRENT_CERT" ]; then
-            echo "Signing certificate changed. This APK cannot update the currently released app, so no release will be published."
-            echo "Configure the existing app signing key in GitHub Actions before building an in-app update."
-            exit 1
+            if [ "$VERSION_NAME" = "1.0.42" ]; then
+              echo "First permanent-key release: certificate migration acknowledged. Existing installs must back up local data, uninstall, install this release, and restore."
+            else
+              echo "Signing certificate changed after migration. Refusing to publish an APK that cannot update the installed app."
+              exit 1
+            fi
+          else
+            echo "Signing certificate matches the current release."
           fi
-          echo "Signing certificate matches the current release."
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
