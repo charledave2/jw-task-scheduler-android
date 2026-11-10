@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.47
+- Removed the profile popup’s delete-photo and close buttons.
+- Placed the name edit icon beside the profile name and kept the name editor visible above the keyboard.
+- Added bottom navigation safe-area spacing beneath Profile and Sign out.
+
+
 ## 1.0.46
 - The in-app update banner returns on app resume until the update is installed.
 - Reworked profile editing: tap the photo to upload, tap the name to edit, and aligned the action buttons.
