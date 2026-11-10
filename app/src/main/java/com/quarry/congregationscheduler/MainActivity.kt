@@ -108,6 +108,7 @@ class AppStore(context: android.content.Context) {
     val fontScale = mutableFloatStateOf(preferences.getFloat("font_scale", 1f))
     val offline = mutableStateOf(true)
     val avatar = mutableStateOf<ImageBitmap?>(null)
+    val accountPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
     val personPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
     val calendarRequestedDate = mutableStateOf<LocalDate?>(null)
     val calendarShouldOpenDate = mutableStateOf(false)
@@ -244,6 +245,13 @@ class AppStore(context: android.content.Context) {
         } catch (_: Exception) { }
     }
     suspend fun loadUsers() { if (localMode) { users.value = emptyList(); return }; loading.value = true; try { users.value = api.loadUsers() } catch (e: Exception) { error.value = e.message }; loading.value = false }
+    suspend fun loadAccountPhoto(account: ManagedUser) {
+        if (!account.hasAvatar) { accountPhotos.value = accountPhotos.value - account.id; return }
+        val bytes = api.downloadAccountAvatar(account.id)
+        val image = bytes?.let { withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() } }
+        accountPhotos.value = if (image == null) accountPhotos.value - account.id else accountPhotos.value + (account.id to image)
+    }
+    suspend fun resetPassword(account: ManagedUser, password: String, confirm: String) { api.resetUserPassword(account,password,confirm) }
     suspend fun createUser(username: String, displayName: String, password: String, confirmPassword: String, role: String, departments: List<String>, actions: List<String>) {
         api.createUser(username, displayName, password, confirmPassword, role, departments, actions)
         loadUsers()
@@ -319,7 +327,7 @@ class AppStore(context: android.content.Context) {
         dark.value = enabled
         preferences.edit().putBoolean("dark_appearance", enabled).apply()
     }
-    suspend fun signOut() { if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
+    suspend fun signOut() { if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2104,6 +2112,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
             var selectedAccount by remember { mutableStateOf<ManagedUser?>(null) }
+            var passwordAccount by remember { mutableStateOf<ManagedUser?>(null) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) {
                 Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold)
                 FilledTonalIconButton(onClick=onAddAccount,modifier=Modifier.size(42.dp)) { Icon(MaterialSymbol("user-plus"),"Add account",Modifier.size(22.dp),MaterialTheme.colorScheme.primary) }
@@ -2114,10 +2123,13 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             LazyVerticalGrid(columns=GridCells.Fixed(columns),modifier=Modifier.fillMaxWidth().heightIn(max=440.dp).padding(top=8.dp),contentPadding=PaddingValues(4.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                 items(accounts.size) { index ->
                     val account=accounts[index]
+                    LaunchedEffect(account.id,account.avatarUpdatedAt,account.hasAvatar) {
+                        try { store.loadAccountPhoto(account) } catch(e:Exception) { snackbar.showSnackbar("Could not load account photo. Try opening Accounts & Access again.") }
+                    }
                     Card(onClick={selectedAccount=account},shape=RoundedCornerShape(18.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.42f))) {
                         Column(Modifier.fillMaxWidth().padding(vertical=14.dp,horizontal=6.dp),horizontalAlignment=Alignment.CenterHorizontally) {
                             Box(Modifier.size(68.dp)) {
-                                Avatar(account.displayName,size=68.dp)
+                                Avatar(account.displayName,size=68.dp,photo=store.accountPhotos.value[account.id])
                                 if(account.role=="admin") Surface(Modifier.align(Alignment.BottomEnd).size(24.dp),shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
                                     Icon(MaterialSymbol("workspace_premium"),"Administrator",Modifier.padding(3.dp),MaterialTheme.colorScheme.primary)
                                 }
@@ -2133,10 +2145,10 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             selectedAccount?.let { account ->
                 Dialog(onDismissRequest={selectedAccount=null}) {
                     Card(shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
-                        Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                        Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                             Row(verticalAlignment=Alignment.CenterVertically) {
                                 Box(Modifier.size(64.dp)) {
-                                    Avatar(account.displayName,size=64.dp)
+                                    Avatar(account.displayName,size=64.dp,photo=store.accountPhotos.value[account.id])
                                     if(account.role=="admin") Surface(Modifier.align(Alignment.BottomEnd).size(23.dp),shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
                                         Icon(MaterialSymbol("workspace_premium"),"Administrator",Modifier.padding(3.dp),MaterialTheme.colorScheme.primary)
                                     }
@@ -2150,7 +2162,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                             HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                             Text("Change role",fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                                listOf("admin" to "Admin","assistant" to "Editor","viewer" to "Viewer").forEach { (role,label) ->
+                                (if(account.role=="admin") listOf("admin" to "Admin") else listOf("assistant" to "Editor","viewer" to "Viewer")).forEach { (role,label) ->
                                     FilterChip(selected=account.role==role,onClick={
                                         if(account.role!=role && !(account.role=="admin" && store.users.value.count{it.role=="admin"&&it.active}<=1)) scope.launch {
                                             try { store.setRole(account,role); selectedAccount=null; snackbar.showSnackbar("Role changed to $label.") }
@@ -2160,6 +2172,9 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                                 }
                             }
                             if(account.role!="admin") {
+                                OutlinedButton(onClick={passwordAccount=account;selectedAccount=null},modifier=Modifier.fillMaxWidth()) {
+                                    Icon(MaterialSymbol("lock"),null,Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Reset password")
+                                }
                                 OutlinedButton(onClick={scope.launch {
                                     try { store.setActive(account,!account.active); selectedAccount=null; snackbar.showSnackbar(if(account.active)"Account disabled." else "Account enabled.") }
                                     catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not update account status.") }
@@ -2170,11 +2185,16 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                                     Icon(MaterialSymbol("trash-2"),null,Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Delete account")
                                 }
                             }
-                            Text("Password reset and per-account photo loading need matching server API support.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             TextButton(onClick={selectedAccount=null},modifier=Modifier.align(Alignment.End)){Text("Close")}
                         }
                     }
                 }
+            }
+            passwordAccount?.let { account ->
+                AccountPasswordResetDialog(account,onDismiss={passwordAccount=null},onReset={password,confirm ->
+                    store.resetPassword(account,password,confirm)
+                    snackbar.showSnackbar("Password reset. This account must sign in again.")
+                })
             }
         }
         SettingSection("App Preferences", "Appearance · Text size · Offline Access · About", "sliders-horizontal", expanded=="prefs", { expanded=if(expanded=="prefs")null else "prefs" }) {
@@ -2503,6 +2523,36 @@ private fun PickerChoiceRow(title:String,subtitle:String,selected:Boolean,icon:S
 }
 
 @Composable
+private fun AccountPasswordResetDialog(account: ManagedUser,onDismiss:()->Unit,onReset:suspend(String,String)->Unit) {
+    var password by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope=rememberCoroutineScope()
+    Dialog(onDismissRequest={if(!saving)onDismiss()}) {
+        Card(shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
+            Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                Text("Reset password",fontSize=20.sp,fontWeight=FontWeight.Bold)
+                Text("Set a new password for ${account.displayName}. They will need to sign in again on all devices.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                PasswordField(password,{password=it;error=null},"New password",Modifier.fillMaxWidth(),supportingText="10–200 characters")
+                PasswordField(confirm,{confirm=it;error=null},"Confirm password",Modifier.fillMaxWidth())
+                error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=12.sp) }
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End) {
+                    TextButton(enabled=!saving,onClick=onDismiss){Text("Cancel")}
+                    Button(enabled=!saving,onClick={
+                        when {
+                            password.length !in 10..200 -> error="Password must contain 10–200 characters."
+                            password!=confirm -> error="Password confirmation does not match."
+                            else -> { saving=true; scope.launch { try { onReset(password,confirm); onDismiss() } catch(e:Exception) { error=e.message ?: "Could not reset password." } finally { saving=false } } }
+                        }
+                    }) { if(saving) CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp) else Text("Reset") }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AccountCreateDialog(onDismiss: () -> Unit, onCreate: suspend (String, String, String, String, String, List<String>, List<String>) -> Unit) {
     var displayName by remember { mutableStateOf("") }
     var username by remember { mutableStateOf("") }
@@ -2806,6 +2856,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "share", "share-2" -> Icons.TwoTone.Share
     "edit", "edit-note" -> Icons.TwoTone.Edit
     "auto_awesome", "wand-sparkles" -> Icons.TwoTone.AutoAwesome
+    "block" -> Icons.TwoTone.Block
     "lock", "lock-keyhole" -> Icons.TwoTone.Lock
     "dark_mode", "moon" -> Icons.TwoTone.DarkMode
     "light_mode", "sun" -> Icons.TwoTone.LightMode
@@ -2819,3 +2870,4 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "check" -> Icons.TwoTone.Check
     else -> Icons.TwoTone.Info
 }
+

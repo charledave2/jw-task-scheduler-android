@@ -44,7 +44,7 @@ data class Meeting(val date: String, val type: String, val time: String, val slo
 data class UserInfo(val id: String, val username: String, val displayName: String, val role: String, val permissions: String)
 data class WorkspaceSettings(val name: String, val thursday: String, val saturday: String, val sunday: String)
 data class ScheduleData(val people: List<Person>, val meetings: List<Meeting>, val settings: WorkspaceSettings)
-data class ManagedUser(val id: String, val username: String, val displayName: String, val role: String, val active: Boolean)
+data class ManagedUser(val id: String, val username: String, val displayName: String, val role: String, val active: Boolean, val hasAvatar: Boolean = false, val avatarUpdatedAt: String = "")
 data class TaskReview(val date: String, val type: String, val department: String, val slotKey: String, val personId: String, val personName: String, val status: String, val note: String = "")
 
 class ApiClient(context: Context) {
@@ -249,7 +249,7 @@ class ApiClient(context: Context) {
                 is String -> value.equals("true", ignoreCase = true) || value == "1"
                 else -> true
             }
-            ManagedUser(row.optString("id"), row.optString("username"), row.optString("display_name"), row.optString("role"), active)
+            ManagedUser(row.optString("id"), row.optString("username"), row.optString("display_name"), row.optString("role"), active, row.optInt("has_avatar", 0) != 0, row.optString("avatar_updated_at", ""))
         } }
     }
 
@@ -267,6 +267,11 @@ class ApiClient(context: Context) {
     suspend fun setUserRole(user: ManagedUser, role: String) = withContext(Dispatchers.IO) {
         request("api/users", "PUT", JSONObject().put("id", user.id.toInt()).put("role", role).put("is_active", user.active))
     }
+
+    suspend fun resetUserPassword(user: ManagedUser, password: String, confirm: String) = withContext(Dispatchers.IO) {
+        request("api/users/password", "POST", JSONObject().put("id", user.id.toInt()).put("password", password).put("confirm_password", confirm))
+    }
+    suspend fun downloadAccountAvatar(id: String): ByteArray? = withContext(Dispatchers.IO) { avatarRequest("GET", null, id) }
 
     suspend fun deleteUser(user: ManagedUser) = withContext(Dispatchers.IO) {
         val token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
@@ -290,9 +295,9 @@ class ApiClient(context: Context) {
     suspend fun downloadAvatar(): ByteArray? = withContext(Dispatchers.IO) { avatarRequest("GET", null) }
     suspend fun deleteAvatar() = withContext(Dispatchers.IO) { avatarRequest("DELETE", null) }
 
-    private fun avatarRequest(method: String, webp: ByteArray?): ByteArray? {
+    private fun avatarRequest(method: String, webp: ByteArray?, accountId: String? = null): ByteArray? {
         fun call(token: String): Pair<Int, ByteArray> {
-            val connection = URL(API_BASE + "api/account/avatar").openConnection() as HttpURLConnection
+            val connection = URL(API_BASE + "api/account/avatar" + (accountId?.let { "?id=${java.net.URLEncoder.encode(it, "UTF-8")}" } ?: "")).openConnection() as HttpURLConnection
             connection.requestMethod = method
             connection.connectTimeout = 15_000
             connection.readTimeout = 20_000
@@ -335,3 +340,4 @@ class ApiClient(context: Context) {
 }
 
 class ApiException(val code: Int, override val message: String) : Exception(message)
+
