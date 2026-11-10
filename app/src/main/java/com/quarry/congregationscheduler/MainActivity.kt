@@ -2272,10 +2272,12 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 onClick = {
                     runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/charledave2"))) }
                 },
-                modifier = Modifier.align(Alignment.Start).padding(top = 2.dp),
-                contentPadding = PaddingValues(horizontal = 2.dp, vertical = 4.dp)
+                modifier = Modifier.align(Alignment.Start).padding(top = 2.dp).heightIn(min = 48.dp),
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Text("Built by: Charle Dave", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                androidx.compose.material3.Icon(painter=painterResource(R.drawable.ic_github),contentDescription=null,modifier=Modifier.size(20.dp),tint=MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp))
+                Text("Visit me on GitHub", fontSize = 12.sp, fontWeight = FontWeight.Medium)
             }
         }
     }
