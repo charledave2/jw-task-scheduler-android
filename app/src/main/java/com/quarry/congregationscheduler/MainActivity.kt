@@ -398,7 +398,7 @@ fun SchedulerApp() {
         surfaceDim = Color(0xFF151713), surfaceBright = Color(0xFF383C35),
         surfaceContainerLowest = Color(0xFF151713), surfaceContainerLow = Color(0xFF1B1E19),
         surfaceContainer = Color(0xFF292D27), surfaceContainerHigh = Color(0xFF32372F), surfaceContainerHighest = Color(0xFF3B4038),
-        onSurfaceVariant = Color(0xFFB9BDB2), outlineVariant = Color(0xFF3B4038),
+        onSurfaceVariant = Color(0xFFB9BDB2), outline = Color(0xFF7A8276), outlineVariant = Color(0xFF3B4038),
         secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
         tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
         tertiaryContainer = Color(0xFF384437), onTertiaryContainer = Color(0xFFDDE8D4),
@@ -412,7 +412,7 @@ fun SchedulerApp() {
         surfaceDim = Color(0xFFDADDD7), surfaceBright = Color.White,
         surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F9F5),
         surfaceContainer = Color(0xFFF0F2ED), surfaceContainerHigh = Color(0xFFE9ECE6), surfaceContainerHighest = Color(0xFFE1E5DE),
-        outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
+        outline = Color(0xFF73796F), outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
         onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
         tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
         surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F),
@@ -702,10 +702,28 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
                 OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                 Spacer(Modifier.height(12.dp)); PasswordField(password, { password = it }, "Password", modifier=Modifier.fillMaxWidth(), shape=RoundedCornerShape(13.dp))
                 if (!error.isNullOrBlank()) Text(error, color = Color(0xFFB45148), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
-                Spacer(Modifier.height(18.dp)); Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) { if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White) else Text("Sign In", fontWeight = FontWeight.SemiBold) }
+                Spacer(Modifier.height(18.dp))
+                Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) {
+                    if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
+                    else {
+                        Icon(MaterialSymbol("log-in"), null, Modifier.size(19.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Sign In", fontWeight = FontWeight.SemiBold)
+                    }
+                }
             }
         }
-        Spacer(Modifier.height(8.dp)); TextButton(onClick=onBackToSetup, enabled=!loading) { Text("Back to setup") }
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = onBackToSetup,
+            enabled = !loading,
+            shape = RoundedCornerShape(12.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            Icon(MaterialSymbol("arrow-back"), null, Modifier.size(18.dp))
+            Spacer(Modifier.width(7.dp))
+            Text("Back to setup")
+        }
         Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
     }
 }
@@ -2630,6 +2648,7 @@ private fun shareText(context:android.content.Context,text:String){val intent=In
 /** Maps the app's semantic icon names to Google's Material Two-Tone icon set. */
 private fun MaterialSymbol(name: String): String = when (name) {
     "house" -> "home"
+    "log-in" -> "login"
     "log-out" -> "logout"
     "task-alt" -> "assignment_turned_in"
     "arrow-back" -> "arrow_back"
@@ -2689,6 +2708,7 @@ private fun Icon(
 
 /** Resolves both semantic names and Material Symbol ligatures to a curated Two-Tone vector. */
 private fun twoToneVector(name: String): ImageVector = when (name) {
+    "login" -> Icons.TwoTone.Login
     "arrow_back" -> Icons.AutoMirrored.TwoTone.ArrowBack
     "home", "house" -> Icons.TwoTone.Home
     "logout", "log-out" -> Icons.AutoMirrored.TwoTone.ExitToApp
