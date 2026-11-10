@@ -205,14 +205,7 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun loadAllTaskReviews(forceRefresh: Boolean = false): List<TaskReview> {
         if (!forceRefresh) allTaskReviews.value?.let { return it }
-        if (localMode) return local.allReviews().also { allTaskReviews.value = it }
-        val end = YearMonth.now()
-        val months = (0..35).map { end.minusMonths(it.toLong()) }
-        val loaded = coroutineScope {
-            months.chunked(6).flatMap { batch ->
-                batch.map { month -> async { api.loadTaskReviews(month) } }.awaitAll()
-            }.flatten()
-        }
+        val loaded = if (localMode) local.allReviews() else api.loadTaskReviews(allHistory = true)
         allTaskReviews.value = loaded
         return loaded
     }
