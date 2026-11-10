@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.43
+- Enlarged the Export Studio preview on first open while keeping it responsive on shorter screens.
+- Improved share button icon visibility in light and dark mode using Material You two-tone icons and theme-aware contrast.
+- Updated global icon tinting to follow the active Material theme content colors.
+
+
 ## 1.0.42
 - Added an in-app update banner that checks public GitHub Releases.
 - Added verified APK download and Android installer handoff.
