@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Density
 import kotlin.math.roundToInt
@@ -1680,6 +1681,7 @@ private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig
 @Composable
 private fun ExportScreen(store: AppStore) {
     val context = LocalContext.current
+    val previewMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.58f).coerceIn(300f, 520f).dp
     val scope = rememberCoroutineScope()
     var month by remember { mutableStateOf(store.month.value) }
     val initialMonth = remember { store.month.value }
@@ -1736,7 +1738,7 @@ private fun ExportScreen(store: AppStore) {
             Box(
                 Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 150.dp, max = 300.dp)
+                    .heightIn(min = 150.dp, max = previewMaxHeight)
                     .clip(RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
@@ -1745,7 +1747,7 @@ private fun ExportScreen(store: AppStore) {
                     contentDescription = "Schedule poster preview",
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 300.dp)
+                        .heightIn(max = previewMaxHeight)
                         .graphicsLayer(scaleX = zoom, scaleY = zoom)
                         .transformable(transform, canPan = { false }),
                     contentScale = ContentScale.Fit
@@ -1769,7 +1771,7 @@ private fun ExportScreen(store: AppStore) {
                     }
                 }
             }, enabled = selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(54.dp), shape = RoundedCornerShape(16.dp)) {
-                Icon(MaterialSymbol("share-2"), null, Modifier.size(19.dp)); Spacer(Modifier.width(10.dp)); Text("Share schedule", fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Icon(MaterialSymbol("chevron-right"), null)
+                Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }
@@ -2556,7 +2558,7 @@ private fun Icon(
     symbol: String,
     contentDescription: String?,
     modifier: Modifier = Modifier.size(24.dp),
-    tint: Color = MaterialTheme.colorScheme.onSurface
+    tint: Color = LocalContentColor.current
 ) {
     androidx.compose.material3.Icon(
         imageVector = twoToneVector(symbol),
