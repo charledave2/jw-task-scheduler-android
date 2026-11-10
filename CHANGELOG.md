@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.46
+- The in-app update banner returns on app resume until the update is installed.
+- Reworked profile editing: tap the photo to upload, tap the name to edit, and aligned the action buttons.
+
+
 ## 1.0.45
 - Refined the anchored profile popup spacing and alignment.
 - Matched popup and Material surface-container colors to the app’s green-gray palette in dark and light mode.
