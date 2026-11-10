@@ -1,0 +1,24 @@
+name: Refresh existing signed release
+on:
+  push:
+    branches: [codex/refresh-release-v1.0.56]
+    paths: [".github/workflows/refresh-existing-release.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download and verify original signed APK
+        run: |
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            "https://github.com/charledave2/jw-task-scheduler-android/releases/download/v1.0.56/jw-task-scheduler-1.0.56.apk?refresh=${{ github.run_id }}" \
+            --output jw-task-scheduler-1.0.56.apk
+          echo "5586c402aa05fd8658f586b7382fd134a82dcf03480ccf8bef6bdbc386d3bec5  jw-task-scheduler-1.0.56.apk" | sha256sum --check
+      - name: Refresh APK asset and latest release pointer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v1.0.56 jw-task-scheduler-1.0.56.apk --clobber --repo charledave2/jw-task-scheduler-android
+          gh release edit v1.0.56 --latest --repo charledave2/jw-task-scheduler-android
