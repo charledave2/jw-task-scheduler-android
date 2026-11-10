@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.45
+- Refined the anchored profile popup spacing and alignment.
+- Matched popup and Material surface-container colors to the app’s green-gray palette in dark and light mode.
+
+
 ## 1.0.44
 - Fixed assignment updates so legacy same-day duplicates do not block unrelated assignments or clearing a position.
 - Moved the profile shortcut into the navigation drawer above Sign out.
