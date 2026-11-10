@@ -401,6 +401,9 @@ fun SchedulerApp() {
         primaryContainer = Color(0xFF34473A), onPrimaryContainer = Color(0xFFDCE8D7),
         secondary = Color(0xFFC3D0C0), onSecondary = Color(0xFF253328),
         background = Color(0xFF151713), surface = Color(0xFF20231E), onSurface = Color(0xFFE8E9E1),
+        surfaceDim = Color(0xFF151713), surfaceBright = Color(0xFF383C35),
+        surfaceContainerLowest = Color(0xFF151713), surfaceContainerLow = Color(0xFF1B1E19),
+        surfaceContainer = Color(0xFF292D27), surfaceContainerHigh = Color(0xFF32372F), surfaceContainerHighest = Color(0xFF3B4038),
         onSurfaceVariant = Color(0xFFB9BDB2), outlineVariant = Color(0xFF3B4038),
         secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
         tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
@@ -412,6 +415,9 @@ fun SchedulerApp() {
         primaryContainer = Color(0xFFDCE8D8), onPrimaryContainer = Color(0xFF1D3021),
         secondary = Color(0xFF627A67), onSecondary = Color.White,
         surface = Color.White, onSurface = Color(0xFF252721),
+        surfaceDim = Color(0xFFDADDD7), surfaceBright = Color.White,
+        surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F9F5),
+        surfaceContainer = Color(0xFFF0F2ED), surfaceContainerHigh = Color(0xFFE9ECE6), surfaceContainerHighest = Color(0xFFE1E5DE),
         outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
         onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
         tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
@@ -2276,11 +2282,17 @@ private fun ProfileDialog(
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        modifier = Modifier.width(286.dp)
+        modifier = Modifier.width(260.dp),
+        offset = androidx.compose.ui.unit.DpOffset(9.dp, 0.dp),
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 0.dp,
+        shadowElevation = 8.dp,
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(user.displayName, 46.dp, photo)
+                Avatar(user.displayName, 42.dp, photo)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Text(user.displayName, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
