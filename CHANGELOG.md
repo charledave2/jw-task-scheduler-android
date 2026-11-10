@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.50
+- Replaced lilac input outlines with green-gray theme colors in light and dark mode.
+- Added two-tone icons to the Sign In and Back to setup buttons.
+
+
 ## 1.0.49
 - Overall Top Performer now uses the full review history in local and shared workspaces.
 - Shared review history loads through one authenticated API request.
