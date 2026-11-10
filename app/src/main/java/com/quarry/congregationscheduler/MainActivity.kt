@@ -479,6 +479,32 @@ fun SchedulerApp() {
                             }
                             }
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                            Box(Modifier.fillMaxWidth()) {
+                                Row(
+                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                        .clickable { profileDialog = !profileDialog }
+                                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Avatar(signedIn.displayName, 36.dp, store.avatar.value)
+                                    Spacer(Modifier.width(10.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(signedIn.displayName, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text("Profile", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                }
+                                ProfileDialog(
+                                    user = signedIn,
+                                    photo = store.avatar.value,
+                                    expanded = profileDialog,
+                                    onDismiss = { profileDialog = false },
+                                    onSave = { name -> scope.launch { try { store.saveProfile(name); profileDialog = false } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not update profile") } } },
+                                    onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } },
+                                    onRemovePhoto = { scope.launch { try { store.removeAvatar(); snackbar.showSnackbar("Profile photo removed.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not remove profile photo") } } }
+                                )
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                             Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Spacer(Modifier.width(12.dp))
                                 Icon(MaterialSymbol("log-out"), contentDescription = "Sign out", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
@@ -495,7 +521,6 @@ fun SchedulerApp() {
                         TopAppBar(
                             title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(MaterialSymbol("menu"), "Open navigation", tint = MaterialTheme.colorScheme.onSurface) } },
-                            actions = { IconButton(onClick = { profileDialog = true }) { Avatar(signedIn.displayName, size = 30.dp, photo = store.avatar.value) } },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                         )
                     },
@@ -553,7 +578,6 @@ fun SchedulerApp() {
             val candidates = store.data.value?.people.orEmpty().filter { personEligible(it, meeting, slot) && it.id !in occupiedOnDate }
             AssignmentPickerDialog(meeting, slot, candidates, onDismiss={assignmentTarget=null}, onSelect={person -> scope.launch { try { store.assign(meeting,slot,person); assignmentTarget=null } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not assign person") } } })
         }
-        if (profileDialog && signedIn != null) ProfileDialog(signedIn, store.avatar.value, onDismiss = { profileDialog = false }, onSave = { name -> scope.launch { try { store.saveProfile(name); profileDialog = false } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not update profile") } } }, onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } }, onRemovePhoto = { scope.launch { try { store.removeAvatar(); snackbar.showSnackbar("Profile photo removed.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not remove profile photo") } } })
         if (createAccountDialog) AccountCreateDialog(onDismiss = { createAccountDialog = false }, onCreate = { username, displayName, password, confirm, role, departments, actions -> store.createUser(username, displayName, password, confirm, role, departments, actions); snackbar.showSnackbar("Account created.") })
         confirmDelete?.let { account -> AlertDialog(
             onDismissRequest = { confirmDelete = null },
@@ -2238,34 +2262,45 @@ private fun SettingSection(title: String, subtitle: String, icon: String, open: 
 }
 
 @Composable
-private fun ProfileDialog(user: UserInfo, photo: ImageBitmap?, onDismiss: () -> Unit, onSave: (String) -> Unit, onPhotoSelected: (Uri) -> Unit, onRemovePhoto: () -> Unit) {
-    var name by remember { mutableStateOf(user.displayName) }
-    val picker= rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(onPhotoSelected) }
-    Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        Surface(Modifier.fillMaxWidth(.92f).widthIn(max=430.dp).heightIn(max=590.dp),shape=RoundedCornerShape(26.dp),color=MaterialTheme.colorScheme.surface,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),tonalElevation=8.dp) {
-            Column {
-                Row(Modifier.fillMaxWidth().padding(start=20.dp,end=12.dp,top=17.dp,bottom=13.dp),verticalAlignment=Alignment.CenterVertically) {
-                    Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol("user-round"),null,tint=MaterialTheme.colorScheme.primary)}
-                    Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)){Text("Edit profile",fontSize=20.sp,fontWeight=FontWeight.Bold);Text("Update your name and photo",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))}
-                    IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close",tint=MaterialTheme.colorScheme.onSurfaceVariant)}
+private fun ProfileDialog(
+    user: UserInfo,
+    photo: ImageBitmap?,
+    expanded: Boolean,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+    onPhotoSelected: (Uri) -> Unit,
+    onRemovePhoto: () -> Unit
+) {
+    var name by remember(user.id) { mutableStateOf(user.displayName) }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(onPhotoSelected) }
+    DropdownMenu(
+        expanded = expanded,
+        onDismissRequest = onDismiss,
+        modifier = Modifier.width(286.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Avatar(user.displayName, 46.dp, photo)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(user.displayName, fontSize = 14.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(roleLabel(user.role), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
                 }
-                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=20.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(14.dp)) {
-                    Box(contentAlignment=Alignment.BottomEnd) {
-                        Avatar(user.displayName,88.dp,photo)
-                        Box(Modifier.size(28.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).clickable { picker.launch("image/*") },contentAlignment=Alignment.Center){Icon(MaterialSymbol("camera"),"Change profile photo",tint=MaterialTheme.colorScheme.onPrimary,modifier=Modifier.size(15.dp))}
-                    }
-                    Text(user.displayName,fontWeight=FontWeight.SemiBold,fontSize=16.sp)
-                    Text(roleLabel(user.role),color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp)
-                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)) {
-                        OutlinedButton(onClick={picker.launch("image/*")},modifier=Modifier.weight(1f),shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=9.dp)){Icon(MaterialSymbol("camera"),null,Modifier.size(16.dp));Spacer(Modifier.width(6.dp));Text(if(photo==null)"Add photo" else "Change photo",fontSize=12.sp,maxLines=1)}
-                        if(photo!=null) TextButton(onClick=onRemovePhoto,modifier=Modifier.weight(.8f),shape=RoundedCornerShape(12.dp)){Icon(MaterialSymbol("trash-2"),null,Modifier.size(16.dp));Spacer(Modifier.width(5.dp));Text("Remove",fontSize=12.sp)}
-                    }
-                    HorizontalDivider(Modifier.padding(vertical=2.dp),color=MaterialTheme.colorScheme.outlineVariant)
-                    OutlinedTextField(name,{name=it},label={Text("Display name")},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(13.dp))
+                IconButton(onClick = onDismiss, modifier = Modifier.size(34.dp)) { Icon(MaterialSymbol("close"), "Close profile", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp)) }
+            }
+            OutlinedTextField(name, { name = it }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(onClick = { picker.launch("image/*") }, modifier = Modifier.weight(1f), shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 7.dp)) {
+                    Icon(MaterialSymbol("camera"), null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text(if (photo == null) "Add photo" else "Change photo", fontSize = 11.sp, maxLines = 1)
                 }
-                HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=11.dp),horizontalArrangement=Arrangement.End,verticalAlignment=Alignment.CenterVertically){TextButton(onClick=onDismiss){Text("Cancel")};Spacer(Modifier.width(8.dp));Button(onClick={onSave(name.trim())},shape=RoundedCornerShape(12.dp),contentPadding=PaddingValues(horizontal=22.dp,vertical=10.dp)){Text("Save changes")}}
+                if (photo != null) {
+                    Spacer(Modifier.width(4.dp))
+                    IconButton(onClick = onRemovePhoto) { Icon(MaterialSymbol("trash-2"), "Remove photo", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(19.dp)) }
+                }
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+                Button(onClick = { onSave(name.trim()) }, shape = RoundedCornerShape(11.dp), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)) { Text("Save") }
             }
         }
     }
