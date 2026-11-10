@@ -184,7 +184,7 @@ class ApiClient(context: Context) {
         request("api/workspace/assignments","POST",JSONObject()
             .put("meeting_date",meeting.date).put("meeting_id",meeting.type).put("meeting_time",meeting.time)
             .put("department_id",slot.department).put("role_id",slot.key)
-            .put("person_id",person?.id?.toIntOrNull()).put("locked",slot.locked))
+            .put("person_id",person?.id?.toIntOrNull() ?: JSONObject.NULL).put("locked",slot.locked))
     }
 
     suspend fun createPerson(person: Person) = withContext(Dispatchers.IO) {
