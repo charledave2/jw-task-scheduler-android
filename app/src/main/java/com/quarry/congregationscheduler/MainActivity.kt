@@ -681,7 +681,7 @@ private fun LoadingSplashScreen() {
     ) {
         Image(
             painterResource(R.drawable.csp_logo), null,
-            modifier = Modifier.size(196.dp).graphicsLayer(scaleX = scale, scaleY = scale),
+            modifier = Modifier.size(196.dp).graphicsLayer(scaleX = scale, scaleY = scale).clip(RoundedCornerShape(44.dp)),
             contentScale = ContentScale.Fit
         )
         Text("JW Task Scheduler", fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 24.dp))
