@@ -264,6 +264,10 @@ class ApiClient(context: Context) {
         request("api/users", "PUT", JSONObject().put("id", user.id.toInt()).put("role", user.role).put("is_active", active))
     }
 
+    suspend fun setUserRole(user: ManagedUser, role: String) = withContext(Dispatchers.IO) {
+        request("api/users", "PUT", JSONObject().put("id", user.id.toInt()).put("role", role).put("is_active", user.active))
+    }
+
     suspend fun deleteUser(user: ManagedUser) = withContext(Dispatchers.IO) {
         val token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
         try { raw("api/users?id=${user.id}", "DELETE", null, token) } catch (e: ApiException) {

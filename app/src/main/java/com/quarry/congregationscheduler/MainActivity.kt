@@ -26,6 +26,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -246,6 +249,7 @@ class AppStore(context: android.content.Context) {
         loadUsers()
     }
     suspend fun setActive(user: ManagedUser, active: Boolean) { api.setUserActive(user, active); loadUsers() }
+    suspend fun setRole(user: ManagedUser, role: String) { api.setUserRole(user, role); loadUsers() }
     suspend fun deleteUser(user: ManagedUser) { api.deleteUser(user); loadUsers() }
     suspend fun saveWorkspace(settings: WorkspaceSettings) {
         val saved = if (localMode) settings.also(local::settings) else api.saveWorkspace(settings)
@@ -2099,24 +2103,76 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             }
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) { Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold); TextButton(onClick=onAddAccount) { Text("+ Add") } }
-            if (store.users.value.isEmpty()) Text("No accounts found.", color=MaterialTheme.colorScheme.onSurfaceVariant, fontSize=12.sp)
-            store.users.value.forEach { account ->
-                Row(Modifier.fillMaxWidth().padding(vertical=8.dp), verticalAlignment=Alignment.CenterVertically) {
-                    Avatar(account.displayName); Spacer(Modifier.width(9.dp)); Column(Modifier.weight(1f)) { Text(account.displayName, fontSize=12.sp, fontWeight=FontWeight.SemiBold); Text("${roleLabel(account.role)} · @${account.username}", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant) }
-                    if (account.role != "admin") {
-                        TextButton(onClick = {
-                            scope.launch {
-                                try {
-                                    val nextActive = !account.active
-                                    store.setActive(account, nextActive)
-                                    snackbar.showSnackbar(if (nextActive) "${account.displayName} enabled." else "${account.displayName} disabled.")
-                                } catch (e: Exception) {
-                                    snackbar.showSnackbar(e.message ?: "Could not update account status.")
+            var selectedAccount by remember { mutableStateOf<ManagedUser?>(null) }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) {
+                Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold)
+                FilledTonalIconButton(onClick=onAddAccount,modifier=Modifier.size(42.dp)) { Icon(MaterialSymbol("user-plus"),"Add account",Modifier.size(22.dp),MaterialTheme.colorScheme.primary) }
+            }
+            if (store.users.value.isEmpty()) Text("No accounts found.",color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp)
+            val accounts=store.users.value
+            val columns=if(LocalConfiguration.current.screenWidthDp>=600) 4 else 3
+            LazyVerticalGrid(columns=GridCells.Fixed(columns),modifier=Modifier.fillMaxWidth().heightIn(max=440.dp).padding(top=8.dp),contentPadding=PaddingValues(4.dp),horizontalArrangement=Arrangement.spacedBy(10.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
+                items(accounts.size) { index ->
+                    val account=accounts[index]
+                    Card(onClick={selectedAccount=account},shape=RoundedCornerShape(18.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.42f))) {
+                        Column(Modifier.fillMaxWidth().padding(vertical=14.dp,horizontal=6.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                            Box(Modifier.size(68.dp)) {
+                                Avatar(account.displayName,size=68.dp)
+                                if(account.role=="admin") Surface(Modifier.align(Alignment.BottomEnd).size(24.dp),shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
+                                    Icon(MaterialSymbol("workspace_premium"),"Administrator",Modifier.padding(3.dp),MaterialTheme.colorScheme.primary)
                                 }
                             }
-                        }) { Text(if (account.active) "Disable" else "Enable", fontSize = 10.sp) }
-                        IconButton(onClick = { onDelete(account) }) { Icon(MaterialSymbol("trash-2"), "Delete account", tint = Color(0xFFB45148)) }
+                            Spacer(Modifier.height(8.dp))
+                            Text(account.displayName,fontSize=12.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
+                            Text(roleLabel(account.role),fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
+                            Text(if(account.active)"Active" else "Disabled",fontSize=9.sp,color=if(account.active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+            selectedAccount?.let { account ->
+                Dialog(onDismissRequest={selectedAccount=null}) {
+                    Card(shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
+                        Column(Modifier.fillMaxWidth().padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+                            Row(verticalAlignment=Alignment.CenterVertically) {
+                                Box(Modifier.size(64.dp)) {
+                                    Avatar(account.displayName,size=64.dp)
+                                    if(account.role=="admin") Surface(Modifier.align(Alignment.BottomEnd).size(23.dp),shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
+                                        Icon(MaterialSymbol("workspace_premium"),"Administrator",Modifier.padding(3.dp),MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                Spacer(Modifier.width(14.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(account.displayName,fontWeight=FontWeight.Bold,fontSize=18.sp)
+                                    Text("@${account.username} · ${roleLabel(account.role)}",color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp)
+                                }
+                            }
+                            HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                            Text("Change role",fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                                listOf("admin" to "Admin","assistant" to "Editor","viewer" to "Viewer").forEach { (role,label) ->
+                                    FilterChip(selected=account.role==role,onClick={
+                                        if(account.role!=role && !(account.role=="admin" && store.users.value.count{it.role=="admin"&&it.active}<=1)) scope.launch {
+                                            try { store.setRole(account,role); selectedAccount=null; snackbar.showSnackbar("Role changed to $label.") }
+                                            catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not change role.") }
+                                        }
+                                    },label={Text(label,fontSize=10.sp)})
+                                }
+                            }
+                            if(account.role!="admin") {
+                                OutlinedButton(onClick={scope.launch {
+                                    try { store.setActive(account,!account.active); selectedAccount=null; snackbar.showSnackbar(if(account.active)"Account disabled." else "Account enabled.") }
+                                    catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not update account status.") }
+                                }},modifier=Modifier.fillMaxWidth()) {
+                                    Icon(MaterialSymbol("block"),null,Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(if(account.active)"Disable account" else "Enable account")
+                                }
+                                OutlinedButton(onClick={selectedAccount=null;onDelete(account)},modifier=Modifier.fillMaxWidth(),colors=ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.error)) {
+                                    Icon(MaterialSymbol("trash-2"),null,Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Delete account")
+                                }
+                            }
+                            Text("Password reset and per-account photo loading need matching server API support.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            TextButton(onClick={selectedAccount=null},modifier=Modifier.align(Alignment.End)){Text("Close")}
+                        }
                     }
                 }
             }
