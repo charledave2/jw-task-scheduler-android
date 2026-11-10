@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.48
+- Added centered Material You two-tone buttons to Initial Setup, including a cloud icon for shared workspace.
+- Added Overall and Monthly modes to the Home page Top Performer card.
+
+
 ## 1.0.47
 - Removed the profile popup’s delete-photo and close buttons.
 - Placed the name edit icon beside the profile name and kept the name editor visible above the keyboard.
