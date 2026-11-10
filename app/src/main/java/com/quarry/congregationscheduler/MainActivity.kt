@@ -488,38 +488,39 @@ fun SchedulerApp() {
                                 )
                             }
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            Box(Modifier.fillMaxWidth()) {
-                                Row(
-                                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                                        .clickable { profileDialog = !profileDialog }
-                                        .padding(horizontal = 10.dp, vertical = 9.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Avatar(signedIn.displayName, 36.dp, store.avatar.value)
-                                    Spacer(Modifier.width(10.dp))
-                                    Column(Modifier.weight(1f)) {
-                                        Text(signedIn.displayName, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        Text("Profile", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Column(Modifier.navigationBarsPadding()) {
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Box(Modifier.fillMaxWidth()) {
+                                    Row(
+                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                            .clickable { profileDialog = !profileDialog }
+                                            .padding(horizontal = 10.dp, vertical = 9.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Avatar(signedIn.displayName, 36.dp, store.avatar.value)
+                                        Spacer(Modifier.width(10.dp))
+                                        Column(Modifier.weight(1f)) {
+                                            Text(signedIn.displayName, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            Text("Profile", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                        Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                                     }
-                                    Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                                    ProfileDialog(
+                                        user = signedIn,
+                                        photo = store.avatar.value,
+                                        expanded = profileDialog,
+                                        onDismiss = { profileDialog = false },
+                                        onSave = { name -> scope.launch { try { store.saveProfile(name); profileDialog = false } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not update profile") } } },
+                                        onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } }
+                                    )
                                 }
-                                ProfileDialog(
-                                    user = signedIn,
-                                    photo = store.avatar.value,
-                                    expanded = profileDialog,
-                                    onDismiss = { profileDialog = false },
-                                    onSave = { name -> scope.launch { try { store.saveProfile(name); profileDialog = false } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not update profile") } } },
-                                    onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } },
-                                    onRemovePhoto = { scope.launch { try { store.removeAvatar(); snackbar.showSnackbar("Profile photo removed.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not remove profile photo") } } }
-                                )
-                            }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Spacer(Modifier.width(12.dp))
-                                Icon(MaterialSymbol("log-out"), contentDescription = "Sign out", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
-                                Spacer(Modifier.width(12.dp))
-                                Text("Sign out", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Spacer(Modifier.width(12.dp))
+                                    Icon(MaterialSymbol("log-out"), contentDescription = "Sign out", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Text("Sign out", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
+                                }
                             }
                         }
                     }
@@ -2278,8 +2279,7 @@ private fun ProfileDialog(
     expanded: Boolean,
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
-    onPhotoSelected: (Uri) -> Unit,
-    onRemovePhoto: () -> Unit
+    onPhotoSelected: (Uri) -> Unit
 ) {
     var name by remember(user.id, user.displayName) { mutableStateOf(user.displayName) }
     var editingName by remember(user.id) { mutableStateOf(false) }
@@ -2295,15 +2295,21 @@ private fun ProfileDialog(
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        modifier = Modifier.width(260.dp),
+        modifier = Modifier.width(260.dp).imePadding(),
         offset = androidx.compose.ui.unit.DpOffset(9.dp, 0.dp),
+        properties = androidx.compose.ui.window.PopupProperties(focusable = true),
         shape = RoundedCornerShape(20.dp),
         containerColor = MaterialTheme.colorScheme.surfaceVariant,
         tonalElevation = 0.dp,
         shadowElevation = 8.dp,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(
+            Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                .heightIn(max = 420.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     Modifier.size(46.dp).clickable(onClickLabel = "Upload profile photo") { picker.launch("image/*") },
@@ -2338,20 +2344,13 @@ private fun ProfileDialog(
                                 .padding(vertical = 3.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(name.ifBlank { user.displayName }, modifier = Modifier.weight(1f), fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Icon(MaterialSymbol("edit"), "Edit name", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                            Text(name.ifBlank { user.displayName }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Icon(MaterialSymbol("edit"), "Edit name", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 5.dp).size(16.dp))
                         }
                     }
                     Text(roleLabel(user.role), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                if (photo != null) {
-                    IconButton(onClick = onRemovePhoto, modifier = Modifier.size(30.dp)) {
-                        Icon(MaterialSymbol("trash-2"), "Remove profile photo", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
-                    }
-                }
-                IconButton(onClick = { keyboardController?.hide(); onDismiss() }, modifier = Modifier.size(30.dp)) {
-                    Icon(MaterialSymbol("close"), "Close profile", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                }
+
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(
