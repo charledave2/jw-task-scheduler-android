@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.52
+- Added administrator password reset for managed accounts.
+- Display uploaded account photos in the account grid and modal, with initials fallback.
+- Preserve custom permissions during account updates and revoke all sessions on disable or password reset.
+- Keep administrator roles protected and remove unsupported admin promotion controls.
+
 ## 1.0.51
 - Replaced the Accounts & Access list with a responsive profile grid and administrator badge.
 - Added a centered account actions dialog with role and account status controls.
