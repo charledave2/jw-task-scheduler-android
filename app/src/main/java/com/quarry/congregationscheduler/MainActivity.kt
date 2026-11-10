@@ -2475,13 +2475,13 @@ private fun ProfileDialog(
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
-            Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+            Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
                 .heightIn(max = (LocalConfiguration.current.screenHeightDp * .7f).dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(user.displayName, 48.dp, photo)
+                Avatar(user.displayName, 42.dp, photo)
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)) {
                     Text(roleLabel(user.role).uppercase(java.util.Locale.ROOT),color=MaterialTheme.colorScheme.primary,fontSize=12.sp,fontWeight=FontWeight.Bold)
@@ -2489,8 +2489,13 @@ private fun ProfileDialog(
                 }
             }
             HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-            OutlinedButton(onClick={picker.launch("image/*")},enabled=!saving,modifier=Modifier.fillMaxWidth()) {
-                Icon(MaterialSymbol("camera"),null,Modifier.size(19.dp)); Spacer(Modifier.width(8.dp)); Text("Change photo")
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick={picker.launch("image/*")},enabled=!saving,modifier=Modifier.weight(1f).heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=6.dp)) {
+                    Icon(MaterialSymbol("camera"),null,Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Change photo",fontSize=12.sp,maxLines=2)
+                }
+                TextButton(onClick={name=user.displayName;editingName=true},enabled=!saving && !editingName,modifier=Modifier.weight(1f).heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=6.dp)) {
+                    Icon(MaterialSymbol("edit"),null,Modifier.size(18.dp));Spacer(Modifier.width(6.dp));Text("Rename",fontSize=12.sp,maxLines=2)
+                }
             }
             if(editingName) {
                 OutlinedTextField(value=name,onValueChange={name=it;error=null},label={Text("Display name")},singleLine=true,enabled=!saving,modifier=Modifier.fillMaxWidth().focusRequester(focusRequester),shape=RoundedCornerShape(12.dp))
@@ -2506,10 +2511,6 @@ private fun ProfileDialog(
                             finally {saving=false}
                         } }
                     },modifier=Modifier.weight(1f)){Text(if(saving)"Saving…" else "Save")}
-                }
-            } else {
-                OutlinedButton(onClick={name=user.displayName;editingName=true},enabled=!saving,modifier=Modifier.fillMaxWidth()) {
-                    Icon(MaterialSymbol("edit"),null,Modifier.size(19.dp));Spacer(Modifier.width(8.dp));Text("Rename")
                 }
             }
             HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)

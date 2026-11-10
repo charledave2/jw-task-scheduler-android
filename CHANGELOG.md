@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.55
+- Made the profile menu more compact with borderless Change photo and Rename actions side by side.
+- Reduced profile menu spacing while retaining Two-Tone icons and comfortable touch targets.
+
 ## 1.0.54
 - Emphasized the signed-in account role in bold uppercase beside the profile photo at the bottom of navigation.
 - Added Change photo and Rename buttons to the profile menu, and moved Sign out inside it.
