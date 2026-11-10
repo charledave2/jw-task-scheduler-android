@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.58
+- People Directory now displays the configured workspace group count instead of Groups 1–9.
+- Add/Edit person uses the workspace configuration in shared and local modes, including group choices and eligible meeting labels.
+- Renamed the directory status filter to All Status.
+- Added clear empty-group handling and validation without silently changing a saved person's group.
+
 ## 1.0.57
 - Replaced the App Preferences attribution with Visit me on GitHub and the GitHub logo, opening the developer profile.
 
