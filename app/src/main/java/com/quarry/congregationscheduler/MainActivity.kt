@@ -1264,9 +1264,9 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
 private fun PeopleScreen(store: AppStore) {
     val people = store.data.value?.people.orEmpty()
     val admin = store.user.value?.role == "admin"
-    var query by remember { mutableStateOf("") }; var filter by remember { mutableStateOf("All") }
+    var query by remember { mutableStateOf("") }; var filter by remember { mutableStateOf("All Status") }
     var editorOpen by remember { mutableStateOf(false) }; var editingPerson by remember { mutableStateOf<Person?>(null) }
-    val shown = people.filter { it.name.contains(query, true) && (filter == "All" || if (filter == "Active") it.status == "active" else it.status != "active") }
+    val shown = people.filter { it.name.contains(query, true) && (filter == "All Status" || if (filter == "Active") it.status == "active" else it.status != "active") }
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -1277,19 +1277,19 @@ private fun PeopleScreen(store: AppStore) {
                 Icon(MaterialSymbol("user-plus"), null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add person", fontSize = 11.sp)
             }
         }
-        Text("${people.size} personnel · Groups 1–9", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
+        Text("${people.size} personnel · ${workspaceGroupSummary(store.workspaceConfig?.groupCount)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
         OutlinedTextField(query, { query = it }, placeholder = { Text("Search people") }, leadingIcon = { Icon(MaterialSymbol("search"), null) }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true, shape = RoundedCornerShape(13.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All Status", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
             items(shown, key = { it.id }) { person ->
-                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(if(store.localMode) store.localConfig.value else null), photoName = person.name, photo = store.personPhotos.value[person.id]) {
+                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(store.workspaceConfig), photoName = person.name, photo = store.personPhotos.value[person.id]) {
                     if (admin) { editingPerson = person; editorOpen = true }
                 }
             }
         }
     }
     if (editorOpen && admin) PersonEditorDialog(
-        localConfig = if (store.localMode) store.localConfig.value else null,
+        localConfig = store.workspaceConfig,
         person = editingPerson,
         photo = editingPerson?.let { store.personPhotos.value[it.id] },
         completedTasks = editingPerson?.let { person ->
@@ -1309,8 +1309,8 @@ private fun PeopleScreen(store: AppStore) {
 private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
     val isNew = person == null
     var name by remember(person?.id) { mutableStateOf(person?.name ?: "") }
-    val groupLimit = (localConfig?.groupCount ?: 9).coerceAtLeast(1)
-    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf((person?.group ?: 1).coerceIn(1, groupLimit)) }
+    val groupCount = (localConfig?.groupCount ?: 0).coerceAtLeast(0)
+    var group by remember(person?.id, localConfig?.groupCount) { mutableIntStateOf(person?.group ?: 1) }
     var customDepartments by remember(person?.id, localConfig) { mutableStateOf(person?.customDepartmentIds ?: emptySet()) }
     var status by remember(person?.id) { mutableStateOf(person?.status ?: "active") }
     var noThursday by remember(person?.id) { mutableStateOf(person?.noThursday ?: false) }
@@ -1391,17 +1391,17 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                     OutlinedTextField(name, { name = it; error = null }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text("GROUP", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Surface(onClick = { if ((localConfig?.groupCount ?: 9) > 0) groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+                        Surface(onClick = { if (groupCount > 0) groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
                                     Text(group.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                 }
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text(if(localConfig?.groupCount==0)"Groups not configured" else "Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(if(localConfig?.groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(if(groupCount==0)"Groups not configured" else "Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(if(groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday, localConfig), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
-                                if(localConfig?.groupCount!=0) {
+                                if(groupCount>0) {
                                     Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                     Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -1451,7 +1451,8 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                             person?.gate ?: false, person?.remarks.orEmpty(), person?.allowDuplicate ?: false, person?.ignoreMeetingConflict ?: false,
                             person?.neverAutoAssign ?: false, person?.assignmentPriority ?: "normal", person?.avatarUpdatedAt, customDepartments)
                         when {
-                            localConfig?.groupCount == 0 -> error = "Set up at least one group in Workspace settings before adding personnel."
+                            groupCount == 0 -> error = "Set up at least one group in Workspace settings before adding personnel."
+                            group !in workspaceGroupNumbers(groupCount) -> error = "Choose a group from the current Workspace setup."
                             name.trim().length < 2 -> error = "Enter a name with at least 2 characters."
                             !mic && !audio && !video && !platform && customDepartments.isEmpty() -> error = "Select at least one department role."
                             else -> { saving = true; error = null; scope.launch { try { onSave(updated); onDismiss() } catch (e: Exception) { error = e.message ?: "Could not save person." } finally { saving = false } } }
@@ -1463,7 +1464,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
             }
         }
     }
-    if (groupPickerOpen) GroupPickerDialog(selected = group, groupCount = localConfig?.groupCount ?: 9, noThursday = noThursday, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
+    if (groupPickerOpen && groupCount > 0) GroupPickerDialog(selected = group, groupCount = groupCount, onDismiss = { groupPickerOpen = false }, onSelect = { group = it; groupPickerOpen = false })
     if (confirmDelete && person != null) AlertDialog(
         onDismissRequest = { confirmDelete = false },
         title = { Text("Delete ${person.name}?") },
@@ -1474,10 +1475,10 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
 }
 
 @Composable
-private fun GroupPickerDialog(selected: Int, groupCount: Int, noThursday: Boolean, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
+private fun GroupPickerDialog(selected: Int, groupCount: Int, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(Modifier.fillMaxWidth(.88f), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column(Modifier.padding(18.dp)) {
+        Card(Modifier.fillMaxWidth(.88f).heightIn(max=(LocalConfiguration.current.screenHeightDp*.85f).dp), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(40.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("users-round"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary) }
                     Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text("Choose a group", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Select the personnel’s group", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -1485,7 +1486,7 @@ private fun GroupPickerDialog(selected: Int, groupCount: Int, noThursday: Boolea
                 }
                 Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (1..groupCount.coerceIn(1, 30)).toList().chunked(4).forEach { row ->
+                    workspaceGroupNumbers(groupCount).toList().chunked(4).forEach { row ->
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { number ->
                                 val isSelected = number == selected
@@ -1499,16 +1500,15 @@ private fun GroupPickerDialog(selected: Int, groupCount: Int, noThursday: Boolea
                         }
                     }
                 }
-                Text("Thursday accepts all groups${if (noThursday) ", but this person is exempt" else ""}.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
+                Text("Groups follow the current Workspace setup.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
             }
         }
     }
 }
 
-private fun groupAvailability(group: Int, noThursday: Boolean): String = when (group) {
-    in 1..4 -> if (noThursday) "Sunday eligible · Thursday exempt" else "Sunday and Thursday eligible"
-    in 5..9 -> if (noThursday) "Saturday eligible · Thursday exempt" else "Saturday and Thursday eligible"
-    else -> ""
+private fun groupAvailability(group: Int, noThursday: Boolean, config: LocalWorkspaceConfig?): String {
+    val labels=config?.meetings.orEmpty().filter { it.active && group in it.eligibleGroups && !(noThursday && it.dayOfWeek==4) }.map { it.label }.distinct()
+    return if(labels.isEmpty()) "No eligible meeting days" else labels.joinToString(" · ")
 }
 
 @Composable
@@ -2954,6 +2954,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "check" -> Icons.TwoTone.Check
     else -> Icons.TwoTone.Info
 }
+
 
 
 
