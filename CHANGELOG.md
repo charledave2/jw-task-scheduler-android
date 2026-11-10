@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.57
+- Replaced the App Preferences attribution with Visit me on GitHub and the GitHub logo, opening the developer profile.
+
 ## 1.0.56
 - Updated the app icon, animated splash logo, login and setup branding to the approved forest-green calendar, people and checkmark design.
 - Replaced cloudy transparent patches with fully opaque artwork and generated all launcher density sizes.
