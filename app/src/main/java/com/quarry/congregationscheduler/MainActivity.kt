@@ -514,7 +514,7 @@ fun SchedulerApp() {
                                 )
                             }
                             }
-                            Column(Modifier.navigationBarsPadding()) {
+                            Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                                 Box(Modifier.fillMaxWidth()) {
                                     Row(
@@ -523,11 +523,11 @@ fun SchedulerApp() {
                                             .padding(horizontal = 10.dp, vertical = 9.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Avatar(signedIn.displayName, 36.dp, store.avatar.value)
+                                        Avatar(signedIn.displayName, 44.dp, store.avatar.value)
                                         Spacer(Modifier.width(10.dp))
                                         Column(Modifier.weight(1f)) {
-                                            Text(signedIn.displayName, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                            Text("Profile", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(roleLabel(signedIn.role).uppercase(java.util.Locale.ROOT), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                                            Text(signedIn.displayName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         }
                                         Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                                     }
@@ -536,17 +536,12 @@ fun SchedulerApp() {
                                         photo = store.avatar.value,
                                         expanded = profileDialog,
                                         onDismiss = { profileDialog = false },
-                                        onSave = { name -> scope.launch { try { store.saveProfile(name); profileDialog = false } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not update profile") } } },
+                                        onSave = { name -> store.saveProfile(name); profileDialog = false },
+                                        onSignOut = { profileDialog = false; scope.launch { drawerState.close(); store.signOut() } },
                                         onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } }
                                     )
                                 }
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                Row(Modifier.fillMaxWidth().clickable { scope.launch { store.signOut() } }.padding(top = 8.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Spacer(Modifier.width(12.dp))
-                                    Icon(MaterialSymbol("log-out"), contentDescription = "Sign out", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
-                                    Spacer(Modifier.width(12.dp))
-                                    Text("Sign out", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium)
-                                }
+
                             }
                         }
                     }
@@ -2115,7 +2110,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
     var sharedSyncInfo by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
-        SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
+        if (store.user.value?.role != "viewer") SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
             Text(if (store.localMode) "Your schedules, personnel, reviews, and profile photos stay on this device. Save a backup before changing phones." else "This congregation uses a shared online workspace. Sign in on another device to access the same schedule." , fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, lineHeight=18.sp)
             if (store.localMode) {
                 Row(Modifier.fillMaxWidth().padding(top=10.dp), horizontalArrangement=Arrangement.spacedBy(8.dp)) {
@@ -2140,7 +2135,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 Text("Optional sync is enabled for this shared workspace.", fontSize=11.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
             }
         }
-        SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
+        if (store.user.value?.role != "viewer") SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
             OutlinedTextField(name, { name=it }, label={Text("Congregation Name")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
             Spacer(Modifier.height(8.dp))
             Text("Manage meeting days, times, groups, departments, and roles in workspace setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2284,7 +2279,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             }
         }
     }
-    if (sharedSyncInfo) {
+    if (sharedSyncInfo && store.user.value?.role != "viewer") {
         AlertDialog(
             onDismissRequest = { sharedSyncInfo = false },
             title = { Text("Shared sync is planned") },
@@ -2446,24 +2441,31 @@ private fun ProfileDialog(
     photo: ImageBitmap?,
     expanded: Boolean,
     onDismiss: () -> Unit,
-    onSave: (String) -> Unit,
+    onSave: suspend (String) -> Unit,
+    onSignOut: () -> Unit,
     onPhotoSelected: (Uri) -> Unit
 ) {
     var name by remember(user.id, user.displayName) { mutableStateOf(user.displayName) }
     var editingName by remember(user.id) { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope=rememberCoroutineScope()
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(onPhotoSelected) }
-    LaunchedEffect(editingName) {
-        if (editingName) {
+    LaunchedEffect(expanded) {
+        if(!expanded) { editingName=false; error=null; name=user.displayName }
+    }
+    LaunchedEffect(editingName, expanded) {
+        if (editingName && expanded) {
             focusRequester.requestFocus()
             keyboardController?.show()
         }
     }
     DropdownMenu(
         expanded = expanded,
-        onDismissRequest = onDismiss,
-        modifier = Modifier.width(260.dp).imePadding(),
+        onDismissRequest = { if(!saving) { keyboardController?.hide(); onDismiss() } },
+        modifier = Modifier.widthIn(max=300.dp).width(280.dp).imePadding(),
         offset = androidx.compose.ui.unit.DpOffset(9.dp, 0.dp),
         properties = androidx.compose.ui.window.PopupProperties(focusable = true),
         shape = RoundedCornerShape(20.dp),
@@ -2473,64 +2475,46 @@ private fun ProfileDialog(
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
         Column(
-            Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
-                .heightIn(max = 420.dp)
+            Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                .heightIn(max = (LocalConfiguration.current.screenHeightDp * .7f).dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(46.dp).clickable(onClickLabel = "Upload profile photo") { picker.launch("image/*") },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Avatar(user.displayName, 46.dp, photo)
-                    Box(
-                        Modifier.align(Alignment.BottomEnd).size(19.dp).clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(MaterialSymbol("upload"), "Upload profile photo", tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(11.dp))
-                    }
+                Avatar(user.displayName, 48.dp, photo)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)) {
+                    Text(roleLabel(user.role).uppercase(java.util.Locale.ROOT),color=MaterialTheme.colorScheme.primary,fontSize=12.sp,fontWeight=FontWeight.Bold)
+                    Text(user.displayName,fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
                 }
-                Spacer(Modifier.width(9.dp))
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    if (editingName) {
-                        androidx.compose.foundation.text.BasicTextField(
-                            value = name,
-                            onValueChange = { name = it },
-                            modifier = Modifier.fillMaxWidth().focusRequester(focusRequester),
-                            singleLine = true,
-                            textStyle = MaterialTheme.typography.titleSmall.copy(
-                                color = MaterialTheme.colorScheme.onSurface,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        )
-                    } else {
-                        Row(
-                            Modifier.fillMaxWidth().clip(RoundedCornerShape(6.dp))
-                                .clickable(onClickLabel = "Edit profile name") { editingName = true }
-                                .padding(vertical = 3.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(name.ifBlank { user.displayName }, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Icon(MaterialSymbol("edit"), "Edit name", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(start = 5.dp).size(16.dp))
-                        }
-                    }
-                    Text(roleLabel(user.role), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
-                    onClick = { editingName = false; keyboardController?.hide(); onDismiss() },
-                    modifier = Modifier.weight(1f)
-                ) { Text("Cancel") }
-                Button(
-                    onClick = { editingName = false; keyboardController?.hide(); onSave(name.trim()) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(11.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                ) { Text("Save") }
+            HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+            OutlinedButton(onClick={picker.launch("image/*")},enabled=!saving,modifier=Modifier.fillMaxWidth()) {
+                Icon(MaterialSymbol("camera"),null,Modifier.size(19.dp)); Spacer(Modifier.width(8.dp)); Text("Change photo")
+            }
+            if(editingName) {
+                OutlinedTextField(value=name,onValueChange={name=it;error=null},label={Text("Display name")},singleLine=true,enabled=!saving,modifier=Modifier.fillMaxWidth().focusRequester(focusRequester),shape=RoundedCornerShape(12.dp))
+                error?.let { Text(it,fontSize=12.sp,color=MaterialTheme.colorScheme.error) }
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+                    TextButton(enabled=!saving,onClick={editingName=false;name=user.displayName;error=null;keyboardController?.hide()},modifier=Modifier.weight(1f)){Text("Cancel")}
+                    Button(enabled=!saving,onClick={
+                        val trimmed=name.trim()
+                        if(trimmed.length !in 2..60) error="Display name must contain 2–60 characters."
+                        else { saving=true;scope.launch {
+                            try { onSave(trimmed);editingName=false;keyboardController?.hide() }
+                            catch(e:Exception){error=e.message ?: "Could not update profile."}
+                            finally {saving=false}
+                        } }
+                    },modifier=Modifier.weight(1f)){Text(if(saving)"Saving…" else "Save")}
+                }
+            } else {
+                OutlinedButton(onClick={name=user.displayName;editingName=true},enabled=!saving,modifier=Modifier.fillMaxWidth()) {
+                    Icon(MaterialSymbol("edit"),null,Modifier.size(19.dp));Spacer(Modifier.width(8.dp));Text("Rename")
+                }
+            }
+            HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+            TextButton(onClick={keyboardController?.hide();onSignOut()},enabled=!saving,modifier=Modifier.fillMaxWidth(),colors=ButtonDefaults.textButtonColors(contentColor=MaterialTheme.colorScheme.error)) {
+                Icon(MaterialSymbol("log-out"),null,Modifier.size(19.dp));Spacer(Modifier.width(8.dp));Text("Sign out")
             }
         }
     }
@@ -2967,5 +2951,6 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "check" -> Icons.TwoTone.Check
     else -> Icons.TwoTone.Info
 }
+
 
 
