@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.61
+- Added an animated forest-green splash screen with a softly glowing calendar constellation, orbiting schedule, people, and completion icons, and a checkmark reveal.
+- Adapted the splash layout and animation for landscape and short screens.
+
+
 ## 1.0.60
 - Replaced the hamburger drawer with a forest-green bottom navigation bar for Home, Calendar, Manage, People, and More.
 - Added a prominent animated center button that opens Manage Schedule, with permission-aware Calendar and Home fallbacks.

@@ -716,29 +716,137 @@ private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: F
 
 @Composable
 private fun LoadingSplashScreen() {
-    val transition = rememberInfiniteTransition(label = "splash-logo")
-    val scale by transition.animateFloat(
-        initialValue = .98f, targetValue = 1.02f,
-        animationSpec = infiniteRepeatable(tween(1500, easing = FastOutSlowInEasing), repeatMode = RepeatMode.Reverse),
-        label = "logo-breathe"
+    val compact = LocalConfiguration.current.screenHeightDp < 420
+    val stageSize = if (compact) 196.dp else 244.dp
+    val logoSize = if (compact) 88.dp else 118.dp
+    val ringSize = if (compact) 142.dp else 184.dp
+    val satelliteRadius = if (compact) 72f else 94f
+
+    val orbit = rememberInfiniteTransition(label = "calendar-constellation")
+    val orbitAngle by orbit.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(tween(9000, easing = LinearEasing)),
+        label = "orbit-angle"
     )
+    val pulse by orbit.animateFloat(
+        initialValue = .96f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "logo-pulse"
+    )
+    val haloAlpha by orbit.animateFloat(
+        initialValue = .13f,
+        targetValue = .30f,
+        animationSpec = infiniteRepeatable(tween(1800, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+        label = "halo-breathe"
+    )
+    val reveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { reveal.animateTo(1f, tween(1000, delayMillis = 100, easing = FastOutSlowInEasing)) }
+
     Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(horizontal = 28.dp),
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(horizontal = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Image(
-            painterResource(R.drawable.csp_logo), null,
-            modifier = Modifier.size(196.dp).graphicsLayer(scaleX = scale, scaleY = scale).clip(RoundedCornerShape(44.dp)),
-            contentScale = ContentScale.Fit
+        Box(Modifier.size(stageSize), contentAlignment = Alignment.Center) {
+            Surface(
+                Modifier.size(ringSize + 22.dp).graphicsLayer(alpha = haloAlpha),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer
+            ) {}
+            Surface(
+                Modifier.size(ringSize).graphicsLayer(scaleX = pulse, scaleY = pulse, rotationZ = -orbitAngle * .16f),
+                shape = CircleShape,
+                color = Color.Transparent,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .72f))
+            ) {}
+            Surface(
+                Modifier.size(ringSize - 18.dp).graphicsLayer(scaleX = 1.02f / pulse, scaleY = 1.02f / pulse, rotationZ = orbitAngle * .23f),
+                shape = CircleShape,
+                color = Color.Transparent,
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = .22f))
+            ) {}
+
+            listOf(
+                Triple("calendar-days", 0f, MaterialTheme.colorScheme.primaryContainer),
+                Triple("users-round", 120f, MaterialTheme.colorScheme.secondaryContainer),
+                Triple("check_circle", 240f, MaterialTheme.colorScheme.tertiaryContainer)
+            ).forEachIndexed { index, item ->
+                val angle = Math.toRadians((orbitAngle + item.second - 90f).toDouble())
+                val x = (kotlin.math.cos(angle) * satelliteRadius).toFloat().dp
+                val y = (kotlin.math.sin(angle) * satelliteRadius).toFloat().dp
+                Surface(
+                    Modifier.align(Alignment.Center).offset(x = x, y = y).size(if (compact) 34.dp else 40.dp)
+                        .graphicsLayer(alpha = (.76f + .24f * reveal.value)),
+                    shape = CircleShape,
+                    color = item.third,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = .55f)),
+                    shadowElevation = 3.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(MaterialSymbol(item.first), null, Modifier.size(if (compact) 18.dp else 21.dp), MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+
+            Box(Modifier.size(logoSize + 20.dp).graphicsLayer {
+                alpha = reveal.value
+                scaleX = (.80f + .20f * reveal.value) * pulse
+                scaleY = (.80f + .20f * reveal.value) * pulse
+                translationY = (1f - reveal.value) * 18.dp.toPx()
+            }, contentAlignment = Alignment.Center) {
+                Image(
+                    painterResource(R.drawable.csp_logo), null,
+                    modifier = Modifier.size(logoSize).clip(RoundedCornerShape(if (compact) 23.dp else 30.dp)),
+                    contentScale = ContentScale.Fit
+                )
+                Surface(
+                    Modifier.align(Alignment.BottomEnd).size(if (compact) 34.dp else 40.dp)
+                        .graphicsLayer(alpha = reveal.value, scaleX = .7f + .3f * reveal.value, scaleY = .7f + .3f * reveal.value),
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primary,
+                    border = androidx.compose.foundation.BorderStroke(3.dp, MaterialTheme.colorScheme.background),
+                    shadowElevation = 5.dp
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(MaterialSymbol("check_circle"), null, Modifier.size(if (compact) 20.dp else 24.dp), MaterialTheme.colorScheme.onPrimary)
+                    }
+                }
+            }
+        }
+
+        Text(
+            "JW Task Scheduler",
+            fontSize = if (compact) 19.sp else 22.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.graphicsLayer(alpha = reveal.value, translationY = (1f - reveal.value) * 10.dp.toPx()).padding(top = 9.dp)
         )
-        Text("JW Task Scheduler", fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 24.dp))
-        Text("Preparing your schedule", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp, bottom = 22.dp))
-        LinearProgressIndicator(
-            modifier = Modifier.width(220.dp).height(4.dp).clip(RoundedCornerShape(50)),
-            color = MaterialTheme.colorScheme.primary,
-            trackColor = MaterialTheme.colorScheme.secondaryContainer
+        Text(
+            "SCHEDULE  ·  ORGANIZE  ·  SERVE",
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 1.1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.graphicsLayer(alpha = reveal.value)
+                .padding(top = 7.dp, bottom = if (compact) 12.dp else 16.dp)
         )
+        Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+            repeat(3) { index ->
+                val dot by orbit.animateFloat(
+                    initialValue = .45f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(tween(700, delayMillis = index * 150, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                    label = "loading-dot-$index"
+                )
+                Box(
+                    Modifier.size(if (compact) 5.dp else 6.dp)
+                        .graphicsLayer(scaleX = dot, scaleY = dot, alpha = .45f + .55f * dot)
+                        .clip(CircleShape).background(MaterialTheme.colorScheme.primary)
+                )
+            }
+        }
     }
 }
 
