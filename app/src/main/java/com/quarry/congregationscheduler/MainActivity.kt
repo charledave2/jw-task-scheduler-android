@@ -11,7 +11,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.net.Uri
 import android.os.Bundle
-import androidx.activity.ComponentActivity
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -80,14 +80,18 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
+    private lateinit var appLock: AppLockController
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        appLock = AppLockController(this)
         window.statusBarColor = android.graphics.Color.rgb(246, 246, 243)
         window.navigationBarColor = android.graphics.Color.rgb(246, 246, 243)
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-        setContent { SchedulerApp() }
+        setContent { AppSecurityShell(appLock) }
     }
+    override fun onStop() { appLock.onBackground(); super.onStop() }
+    override fun onDestroy() { appLock.dispose(); super.onDestroy() }
 }
 
 class AppStore(context: android.content.Context) {
@@ -351,7 +355,7 @@ class AppStore(context: android.content.Context) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SchedulerApp() {
+fun SchedulerApp(appLock: AppLockController) {
     val context = LocalContext.current
     val store = remember { AppStore(context) }
     val scope = rememberCoroutineScope()
@@ -534,7 +538,7 @@ fun SchedulerApp() {
                                     ProfileDialog(
                                         user = signedIn,
                                         photo = store.avatar.value,
-                                        expanded = profileDialog,
+                                        expanded = profileDialog && !appLock.locked,
                                         onDismiss = { profileDialog = false },
                                         onSave = { name -> store.saveProfile(name); profileDialog = false },
                                         onSignOut = { profileDialog = false; scope.launch { drawerState.close(); store.signOut() } },
@@ -571,7 +575,7 @@ fun SchedulerApp() {
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
-                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
+                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
                                 if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
                                 else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
                                     scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
@@ -586,7 +590,7 @@ fun SchedulerApp() {
             }
         }
 
-        if (!showSplash) {
+        if (!showSplash && !appLock.locked) {
                       store.availableUpdate.value?.let { update ->
                         AppUpdateDialog(
                             update = update,
@@ -605,7 +609,7 @@ fun SchedulerApp() {
                         )
                       }
         }
-        if (assignmentTarget != null && store.canOpenPage("Manage Schedule")) {
+        if (!appLock.locked && assignmentTarget != null && store.canOpenPage("Manage Schedule")) {
             val (meeting, slot) = assignmentTarget!!
             val occupiedOnDate = store.data.value?.meetings.orEmpty()
                 .filter { it.date == meeting.date }
@@ -615,8 +619,8 @@ fun SchedulerApp() {
             val candidates = store.data.value?.people.orEmpty().filter { personEligible(it, meeting, slot) && it.id !in occupiedOnDate }
             AssignmentPickerDialog(meeting, slot, candidates, onDismiss={assignmentTarget=null}, onSelect={person -> scope.launch { try { store.assign(meeting,slot,person); assignmentTarget=null } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not assign person") } } })
         }
-        if (createAccountDialog) AccountCreateDialog(onDismiss = { createAccountDialog = false }, onCreate = { username, displayName, password, confirm, role, departments, actions -> store.createUser(username, displayName, password, confirm, role, departments, actions); snackbar.showSnackbar("Account created.") })
-        confirmDelete?.let { account -> AlertDialog(
+        if (createAccountDialog && !appLock.locked) AccountCreateDialog(onDismiss = { createAccountDialog = false }, onCreate = { username, displayName, password, confirm, role, departments, actions -> store.createUser(username, displayName, password, confirm, role, departments, actions); snackbar.showSnackbar("Account created.") })
+        confirmDelete?.takeIf { !appLock.locked }?.let { account -> AlertDialog(
             onDismissRequest = { confirmDelete = null },
             title = { Text("Delete account?") },
             text = { Text("Permanently delete ${account.displayName}'s account? This cannot be undone.") },
@@ -2099,7 +2103,7 @@ private fun createPosterShareUri(context: android.content.Context, poster: Bitma
 }
 
 @Composable
-private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit) {
+private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineScope, snackbar: SnackbarHostState, appLock: AppLockController, onDelete: (ManagedUser) -> Unit, onAddAccount: () -> Unit, onBackup: () -> Unit, onRestore: () -> Unit, onChooseAutoBackupFolder: () -> Unit, onAutoBackupToggle: (Boolean) -> Unit) {
     var expanded by remember { mutableStateOf<String?>(null) }
     var name by remember(store.data.value?.settings?.name) { mutableStateOf(store.data.value?.settings?.name ?: "") }
     var thu by remember(store.data.value?.settings?.thursday) { mutableStateOf(store.data.value?.settings?.thursday ?: "18:00") }
@@ -2244,7 +2248,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 })
             }
         }
-        SettingSection("App Preferences", "Appearance · Text size · Offline Access · About", "sliders-horizontal", expanded=="prefs", { expanded=if(expanded=="prefs")null else "prefs" }) {
+        SettingSection("App Preferences", "Security · Appearance · Text size · About", "sliders-horizontal", expanded=="prefs", { expanded=if(expanded=="prefs")null else "prefs" }) {
+            PreferenceRow(icon="fingerprint",title="Biometric app lock",subtitle=if(appLock.enabled) "On · Unlock when you reopen the app" else "Fingerprint / secure face or phone screen lock") {
+                Switch(checked=appLock.enabled,onCheckedChange=appLock::changeEnabled,enabled=!appLock.busy,colors=appSwitchColors())
+            }
+            TextButton(onClick=appLock::openSecuritySettings,enabled=!appLock.busy,contentPadding=PaddingValues(horizontal=2.dp,vertical=4.dp)) {
+                Icon(MaterialSymbol("settings"),null,Modifier.size(17.dp));Spacer(Modifier.width(6.dp));Text("Phone security settings",fontSize=11.sp)
+            }
+            HorizontalDivider(Modifier.padding(vertical=4.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.65f))
             PreferenceRow(icon = if (store.dark.value) "moon" else "sun", title = "Dark appearance", subtitle = if (store.dark.value) "On · Easier viewing in low light" else "Off · Using light colors") {
                 Switch(checked = store.dark.value, onCheckedChange = { store.setDarkAppearance(it) }, colors = appSwitchColors())
             }
@@ -2918,6 +2929,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "schedule", "clock-3" -> Icons.TwoTone.Schedule
     "groups", "users-round" -> Icons.TwoTone.Groups
     "bar_chart", "chart" -> Icons.TwoTone.BarChart
+    "fingerprint" -> Icons.TwoTone.Fingerprint
     "system_update" -> Icons.TwoTone.SystemUpdate
     "download", "file-down" -> Icons.TwoTone.Download
     "archive" -> Icons.TwoTone.Archive
@@ -2954,6 +2966,7 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "check" -> Icons.TwoTone.Check
     else -> Icons.TwoTone.Info
 }
+
 
 
 

@@ -235,3 +235,9 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+## AndroidX Biometric and AppCompat
+
+AndroidX Biometric 1.1.0 and AppCompat 1.7.0 are licensed under the Apache License, Version 2.0 (license text above).
+Sources: https://android.googlesource.com/platform/frameworks/support/ and https://developer.android.com/jetpack/androidx/releases/biometric
