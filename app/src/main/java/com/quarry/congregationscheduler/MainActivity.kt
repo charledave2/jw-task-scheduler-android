@@ -608,7 +608,7 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
     val totalHeight=if(compact)88.dp else 108.dp
     val buttonSize=if(compact)58.dp else 70.dp
     val barHeight=if(compact)66.dp else 80.dp
-    val primary=previewPrimaryPage(canOpen)
+    val primary=primaryNavigationPage(canOpen)
     val primaryLabel=when(primary){"Manage Schedule"->"Manage";"Schedule Calendar"->"Calendar";else->"Home"}
     val primaryIcon=when(primary){"Manage Schedule"->"calendar-check";"Schedule Calendar"->"calendar-days";else->"house"}
     val regular=listOf(Triple("Home","Home","house"),Triple("Schedule Calendar","Calendar","calendar-days"),Triple("People Directory","People","users-round"))
