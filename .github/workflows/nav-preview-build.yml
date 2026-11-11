@@ -1,0 +1,74 @@
+name: Navigation preview only - no release
+on:
+  push:
+    branches: [codex/bottom-navigation-preview]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools"
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+      - name: Build isolated preview and run unit tests
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Verify isolated package and no installer permission
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk > preview-badging.txt
+          grep -qF "package: name='com.quarry.congregationscheduler.navtest'" preview-badging.txt
+          grep -qF "application-label:'JW Scheduler Preview'" preview-badging.txt
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions app/build/outputs/apk/debug/app-debug.apk > preview-permissions.txt
+          if grep -q REQUEST_INSTALL_PACKAGES preview-permissions.txt; then exit 1; fi
+      - name: Fetch original APK for coexistence check only
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/charledave2/jw-task-scheduler-android/releases/download/v1.0.59/jw-task-scheduler-1.0.59.apk \
+            --output production-baseline.apk
+          echo "0bf1fba62b02eb28176ddf4357c15558a5d732b8c630645f4c459981252df63c  production-baseline.apk" | sha256sum --check
+      - name: Enable emulator hardware acceleration
+        run: sudo chmod 666 /dev/kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          target: default
+          disable-animations: true
+          script: |
+            adb install production-baseline.apk
+            gradle --no-daemon :app:connectedDebugAndroidTest
+            adb shell pm list packages | grep -x 'package:com.quarry.congregationscheduler'
+            adb shell pm list packages | grep -x 'package:com.quarry.congregationscheduler.navtest'
+            mkdir -p preview-artifacts
+            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-light.png preview-artifacts/
+            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-dark.png preview-artifacts/
+            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-landscape.png preview-artifacts/
+      - name: Prepare installable preview
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk preview-artifacts/JW-Scheduler-Navigation-Preview.apk
+          sha256sum preview-artifacts/JW-Scheduler-Navigation-Preview.apk > preview-artifacts/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JW-Scheduler-Navigation-Preview
+          path: preview-artifacts/
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nav-preview-test-reports
+          path: |
+            app/build/reports/tests/
+            app/build/reports/androidTests/
+          if-no-files-found: ignore

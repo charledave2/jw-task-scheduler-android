@@ -14,7 +14,11 @@ import java.time.LocalDate
 import java.time.YearMonth
 import java.time.DayOfWeek
 
-private const val API_BASE = "https://main.congregation-scheduler-pro.pages.dev/"
+private val API_BASE: String
+    get() {
+        check(!BuildConfig.NAV_PREVIEW) { "This navigation preview uses local sample data only." }
+        return "https://main.congregation-scheduler-pro.pages.dev/"
+    }
 
 class TokenStore(context: Context) {
     private val prefs by lazy {

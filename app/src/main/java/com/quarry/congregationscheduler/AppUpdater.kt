@@ -28,6 +28,7 @@ object AppUpdater {
     private const val MAX_APK_BYTES = 150L * 1024L * 1024L
 
     suspend fun checkForUpdate(): AppUpdate? = withContext(Dispatchers.IO) {
+        if (BuildConfig.NAV_PREVIEW) return@withContext null
         val connection = (URL(RELEASE_API).openConnection() as HttpURLConnection).apply {
             connectTimeout = 12_000
             readTimeout = 15_000
@@ -58,6 +59,7 @@ object AppUpdater {
     }
 
     suspend fun download(context: Context, update: AppUpdate, onProgress: (Float) -> Unit): File = withContext(Dispatchers.IO) {
+        check(!BuildConfig.NAV_PREVIEW) { "Production updates are disabled in this preview." }
         val connection = (URL(update.downloadUrl).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 30_000
@@ -104,6 +106,7 @@ object AppUpdater {
     }
 
     fun install(context: Context, apk: File) {
+        check(!BuildConfig.NAV_PREVIEW) { "Production updates are disabled in this preview." }
         val uri: Uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", apk)
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")

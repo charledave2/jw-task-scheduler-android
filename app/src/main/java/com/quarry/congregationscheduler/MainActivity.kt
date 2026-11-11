@@ -49,6 +49,10 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -172,7 +176,7 @@ class AppStore(context: android.content.Context) {
         finally { updateDownloading.value = false }
     }
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
-    fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
+    fun chooseSharedWorkspace() { if(BuildConfig.NAV_PREVIEW)return; mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
     fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
     fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config; refreshAutoBackupInfo() }
     suspend fun saveCloudConfig(config:LocalWorkspaceConfig) { cloudConfig.value=api.saveWorkspaceConfig(config) }
@@ -180,6 +184,17 @@ class AppStore(context: android.content.Context) {
     suspend fun initialize() {
         loading.value = true
         try {
+            if (BuildConfig.NAV_PREVIEW && !preferences.getBoolean("nav_preview_seeded",false)) {
+                createLocalWorkspace("Navigation Preview")
+                local.saveConfig(navigationPreviewConfig())
+                val samples=(1..6).map { number -> Person("nav_sample_$number","Sample Person $number",(number-1)%3+1,"active",false,true,true,true,true) }
+                samples.forEach{local.savePerson(it)}
+                local.schedule(month.value).meetings.filter{it.date>=LocalDate.now().toString()}.take(3).forEach { meeting ->
+                    meeting.slots.take(4).forEachIndexed { index,slot -> local.saveAssignment(meeting,slot,samples[index]) }
+                }
+                preferences.edit().putBoolean("nav_preview_seeded",true).apply()
+            }
+            if(BuildConfig.NAV_PREVIEW && mode.value!="local") { mode.value=null;user.value=null;return }
             if (mode.value == "local") {
                 user.value = UserInfo("local-admin", "local", preferences.getString("local_display_name", "Administrator") ?: "Administrator", "admin", "local")
                 refreshAvatar()
@@ -198,6 +213,7 @@ class AppStore(context: android.content.Context) {
         } finally { loading.value = false }
     }
     suspend fun login(username: String, password: String) {
+        if(BuildConfig.NAV_PREVIEW){error.value="This preview uses a separate local workspace.";return}
         loading.value = true; error.value = null
         try { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply(); user.value = api.login(username.trim(), password); refreshAvatar(); load(); page.value = "Home" }
         catch (e: Exception) { error.value = e.message ?: "Could not sign in."; user.value = null }
@@ -394,7 +410,10 @@ fun SchedulerApp(appLock: AppLockController) {
         }
     }
 
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    var moreOpen by remember { mutableStateOf(false) }
+    val profilePhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if(uri!=null) scope.launch { try { store.saveAvatar(uri);snackbar.showSnackbar("Profile photo updated.") } catch(e:Exception){snackbar.showSnackbar(e.message ?: "Could not upload photo.")} }
+    }
     val openCalendar: (LocalDate?) -> Unit = { requestedDate ->
         scope.launch {
             if (!store.canOpenPage("Schedule Calendar")) { snackbar.showSnackbar("This page is not available for your account."); return@launch }
@@ -476,87 +495,19 @@ fun SchedulerApp(appLock: AppLockController) {
         } else if (signedIn == null) {
             LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
-            ModalNavigationDrawer(
-                modifier = Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
-                drawerState = drawerState,
-                gesturesEnabled = true,
-                drawerContent = {
-                    ModalDrawerSheet(modifier = Modifier.fillMaxHeight().width(310.dp), drawerContainerColor = MaterialTheme.colorScheme.surface) {
-                        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 12.dp)) {
-                                Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)))
-                                Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 15.sp); Text(store.data.value?.settings?.name ?: "Quarry Congregation", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
-                                IconButton(onClick = { scope.launch { drawerState.close() } }) { Icon(MaterialSymbol("close"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                            val items = buildList {
-                                addAll(listOf("Home" to "house", "Schedule Calendar" to "calendar-days", "Manage Schedule" to "calendar-check", "People Directory" to "users-round", "Reports" to "chart"))
-                                if (store.user.value?.role in setOf("admin", "assistant")) add("Task Review" to "clipboard-check")
-                                addAll(listOf("Export Studio" to "file-down", "Settings & Accounts" to "settings"))
-                            }.filter { store.canOpenPage(it.first) }
-                            LazyColumn(
-                                modifier = Modifier.weight(1f).fillMaxWidth(),
-                                contentPadding = PaddingValues(vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                items(items) { (label, icon) ->
-                                val isSelected = page == label || (label == "Manage Schedule" && page == "Schedule")
-                                NavigationDrawerItem(
-                                    label = { Text(label, fontSize = 14.sp, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
-                                    selected = isSelected,
-                                    onClick = { scope.launch { drawerState.close() }; if (label == "Schedule Calendar") openCalendar(null) else { store.page.value = label; if (label == "Settings & Accounts" && store.user.value?.role == "admin") scope.launch { store.loadUsers() } } },
-                                    icon = {
-                                        Box(
-                                            Modifier.size(36.dp).clip(RoundedCornerShape(12.dp))
-                                                .background(if (isSelected) MaterialTheme.colorScheme.onPrimary.copy(alpha = .16f) else MaterialTheme.colorScheme.secondaryContainer.copy(alpha = .7f)),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(MaterialSymbol(icon), null, tint = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(19.dp))
-                                        }
-                                    },
-                                    modifier = Modifier.padding(vertical = 2.dp), colors = NavigationDrawerItemDefaults.colors(selectedContainerColor = MaterialTheme.colorScheme.primary, selectedTextColor = MaterialTheme.colorScheme.onPrimary, selectedIconColor = MaterialTheme.colorScheme.onPrimary)
-                                )
-                            }
-                            }
-                            Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                                Box(Modifier.fillMaxWidth()) {
-                                    Row(
-                                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
-                                            .clickable { profileDialog = !profileDialog }
-                                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Avatar(signedIn.displayName, 44.dp, store.avatar.value)
-                                        Spacer(Modifier.width(10.dp))
-                                        Column(Modifier.weight(1f)) {
-                                            Text(roleLabel(signedIn.role).uppercase(java.util.Locale.ROOT), fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                                            Text(signedIn.displayName, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                        }
-                                        Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                                    }
-                                    ProfileDialog(
-                                        user = signedIn,
-                                        photo = store.avatar.value,
-                                        expanded = profileDialog && !appLock.locked,
-                                        onDismiss = { profileDialog = false },
-                                        onSave = { name -> store.saveProfile(name); profileDialog = false },
-                                        onSignOut = { profileDialog = false; scope.launch { drawerState.close(); store.signOut() } },
-                                        onPhotoSelected = { uri -> scope.launch { try { store.saveAvatar(uri); snackbar.showSnackbar("Profile photo updated.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not upload profile photo") } } }
-                                    )
-                                }
-
-                            }
-                        }
-                    }
-                }
-            ) {
                 Scaffold(
+                    modifier=Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing),
+                    bottomBar={ PreviewBottomNavigation(page=page,moreOpen=moreOpen,canOpen=store::canOpenPage,onMore={moreOpen=true},onNavigate={destination ->
+                        if(store.canOpenPage(destination)) {
+                            moreOpen=false
+                            if(destination=="Schedule Calendar")openCalendar(null) else store.page.value=destination
+                        }
+                    }) },
                     containerColor = MaterialTheme.colorScheme.background,
                     topBar = {
                         TopAppBar(
-                            title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                            navigationIcon = { IconButton(onClick = { scope.launch { drawerState.open() } }) { Icon(MaterialSymbol("menu"), "Open navigation", tint = MaterialTheme.colorScheme.onSurface) } },
+                            title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Scheduler Preview"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            navigationIcon = { Image(painterResource(R.drawable.csp_logo),null,Modifier.padding(start=16.dp,end=10.dp).size(32.dp).clip(RoundedCornerShape(9.dp))) },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                         )
                     },
@@ -587,9 +538,39 @@ fun SchedulerApp(appLock: AppLockController) {
                       }
                     }
                 }
-            }
         }
 
+        if(moreOpen && signedIn!=null && !appLock.locked) {
+            ModalBottomSheet(onDismissRequest={moreOpen=false;profileDialog=false},containerColor=MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxWidth().heightIn(max=(LocalConfiguration.current.screenHeightDp*.72f).dp).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal=20.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+                    Text("More",fontSize=22.sp,fontWeight=FontWeight.Bold)
+                    val tools=buildList {
+                        add("Reports" to "chart")
+                        if(signedIn.role in setOf("admin","assistant"))add("Task Review" to "clipboard-check")
+                        add("Export Studio" to "file-down")
+                        add("Settings & Accounts" to "settings")
+                    }.filter{store.canOpenPage(it.first)}
+                    tools.forEach { (destination,icon) ->
+                        TextButton(onClick={moreOpen=false;profileDialog=false;store.page.value=destination;if(destination=="Settings & Accounts"&&signedIn.role=="admin")scope.launch{store.loadUsers()}},modifier=Modifier.fillMaxWidth(),contentPadding=PaddingValues(horizontal=12.dp,vertical=12.dp)) {
+                            Icon(MaterialSymbol(icon),null,Modifier.size(22.dp));Spacer(Modifier.width(12.dp));Text(destination,Modifier.weight(1f));Icon(MaterialSymbol("chevron-right"),null,Modifier.size(18.dp))
+                        }
+                    }
+                    HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
+                    Box(Modifier.fillMaxWidth()) {
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable{profileDialog=!profileDialog}.padding(12.dp),verticalAlignment=Alignment.CenterVertically) {
+                            Avatar(signedIn.displayName,44.dp,store.avatar.value);Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(roleLabel(signedIn.role).uppercase(java.util.Locale.ROOT),fontWeight=FontWeight.Bold,fontSize=12.sp,color=MaterialTheme.colorScheme.primary)
+                                Text(signedIn.displayName,fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Icon(MaterialSymbol("chevron-right"),"Open profile",Modifier.size(20.dp))
+                        }
+                        ProfileDialog(user=signedIn,photo=store.avatar.value,expanded=profileDialog,onDismiss={profileDialog=false},onSave={name->store.saveProfile(name);profileDialog=false},onSignOut={profileDialog=false;moreOpen=false;scope.launch{store.page.value="Home";store.signOut()}},onRequestPhoto={profilePhotoPicker.launch("image/*")})
+                    }
+                    Text("NAVIGATION PREVIEW · LOCAL SAMPLE WORKSPACE",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(bottom=12.dp))
+                }
+            }
+        }
         if (!showSplash && !appLock.locked) {
                       store.availableUpdate.value?.let { update ->
                         AppUpdateDialog(
@@ -632,6 +613,81 @@ fun SchedulerApp(appLock: AppLockController) {
 }
 
 @Composable
+private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String)->Boolean,onMore:()->Unit,onNavigate:(String)->Unit) {
+    val density=LocalDensity.current
+    if(WindowInsets.ime.getBottom(density)>0)return
+    val compact=LocalConfiguration.current.screenHeightDp<420
+    val totalHeight=if(compact)88.dp else 108.dp
+    val buttonSize=if(compact)58.dp else 70.dp
+    val barHeight=if(compact)66.dp else 80.dp
+    val primary=previewPrimaryPage(canOpen)
+    val primaryLabel=when(primary){"Manage Schedule"->"Manage";"Schedule Calendar"->"Calendar";else->"Home"}
+    val primaryIcon=when(primary){"Manage Schedule"->"calendar-check";"Schedule Calendar"->"calendar-days";else->"house"}
+    val regular=listOf(Triple("Home","Home","house"),Triple("Schedule Calendar","Calendar","calendar-days"),Triple("People Directory","People","users-round"))
+        .filter{it.first!=primary && canOpen(it.first)}+Triple("More","More","more_horiz")
+    val left=regular.take(2)
+    val right=regular.drop(2)
+    val scale=remember{Animatable(1f)}
+    val rotation=remember{Animatable(0f)}
+    val lift=remember{Animatable(0f)}
+    val scope=rememberCoroutineScope()
+    var motionJob by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
+    val bump=with(density){10.dp.toPx()}
+    val top=with(density){(totalHeight-barHeight).toPx()}
+    val radius=with(density){27.dp.toPx()}
+    val shoulder=with(density){52.dp.toPx()}
+    val shape=remember(top,radius,shoulder){androidx.compose.foundation.shape.GenericShape { size,_ ->
+        val mid=size.width/2f
+        moveTo(radius,top);lineTo(mid-shoulder,top)
+        cubicTo(mid-shoulder*.70f,top,mid-shoulder*.70f,0f,mid,0f)
+        cubicTo(mid+shoulder*.70f,0f,mid+shoulder*.70f,top,mid+shoulder,top)
+        lineTo(size.width-radius,top);quadraticBezierTo(size.width,top,size.width,top+radius)
+        lineTo(size.width,size.height-radius);quadraticBezierTo(size.width,size.height,size.width-radius,size.height)
+        lineTo(radius,size.height);quadraticBezierTo(0f,size.height,0f,size.height-radius)
+        lineTo(0f,top+radius);quadraticBezierTo(0f,top,radius,top);close()
+    }}
+    Box(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=6.dp),contentAlignment=Alignment.Center) {
+        Box(Modifier.widthIn(max=600.dp).fillMaxWidth().height(totalHeight)) {
+            Surface(Modifier.fillMaxSize(),shape=shape,color=MaterialTheme.colorScheme.surfaceContainerHigh,shadowElevation=7.dp,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.6f))) {}
+            Row(Modifier.fillMaxWidth().height(barHeight).align(Alignment.BottomCenter).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
+                fun isCurrent(destination:String)=if(destination=="More") moreOpen || page in listOf("Reports","Task Review","Top Performers","Export Studio","Settings & Accounts") else canonicalPage(page)==destination
+                for(index in 0..1) {
+                    val item=left.getOrNull(index)
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
+                }
+                Spacer(Modifier.width(if(compact)64.dp else 78.dp))
+                for(index in 0..1) {
+                    val item=right.getOrNull(index)
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
+                }
+            }
+            Column(Modifier.align(Alignment.TopCenter).padding(top=4.dp),horizontalAlignment=Alignment.CenterHorizontally) {
+                Surface(onClick={
+                    motionJob?.cancel()
+                    motionJob=scope.launch {
+                        launch { scale.animateTo(.85f,tween(70));scale.animateTo(1.1f,spring(dampingRatio=.45f,stiffness=500f));scale.animateTo(1f,spring(dampingRatio=.55f,stiffness=550f)) }
+                        launch { rotation.animateTo(18f,tween(90));rotation.animateTo(-12f,tween(110));rotation.animateTo(0f,spring(dampingRatio=.5f,stiffness=450f)) }
+                        launch { lift.animateTo(-bump,tween(110));lift.animateTo(0f,spring(dampingRatio=.35f,stiffness=450f)) }
+                    }
+                    onNavigate(primary)
+                },modifier=Modifier.size(buttonSize).graphicsLayer(scaleX=scale.value,scaleY=scale.value,rotationZ=rotation.value,translationY=lift.value).semantics{contentDescription=if(primary=="Manage Schedule")"Manage schedule" else primary;role=Role.Button},shape=CircleShape,color=MaterialTheme.colorScheme.primary,contentColor=MaterialTheme.colorScheme.onPrimary,shadowElevation=10.dp,border=androidx.compose.foundation.BorderStroke(4.dp,MaterialTheme.colorScheme.surfaceContainerHigh)) {
+                    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Icon(MaterialSymbol(primaryIcon),null,Modifier.size(if(compact)26.dp else 31.dp))}
+                }
+                Text(primaryLabel,fontSize=if(compact)9.sp else 10.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurface,modifier=Modifier.padding(top=4.dp))
+            }
+        }
+    }
+}
+@Composable
+private fun PreviewNavigationItem(label:String,icon:String,selected:Boolean,modifier:Modifier,compact:Boolean,onClick:()->Unit) {
+    Column(modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick=onClick).semantics{contentDescription=if(label=="More")"More navigation" else label;role=Role.Button}.heightIn(min=48.dp).padding(vertical=5.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(3.dp)) {
+        Icon(MaterialSymbol(icon),null,Modifier.size(if(compact)21.dp else 24.dp),if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(label,fontSize=if(compact)9.sp else 10.sp,fontWeight=if(selected)FontWeight.Bold else FontWeight.Normal,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
+        Box(Modifier.size(4.dp).clip(CircleShape).background(if(selected)MaterialTheme.colorScheme.primary else Color.Transparent))
+    }
+}
+
+@Composable
 private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: Float, error: String?, onUpdate: ()->Unit, onLater: ()->Unit) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * .85f).dp
     Dialog(onDismissRequest={if(!downloading)onLater()}) {
@@ -641,7 +697,7 @@ private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: F
                     Icon(MaterialSymbol("system_update"),null,Modifier.padding(14.dp).size(30.dp),MaterialTheme.colorScheme.onPrimaryContainer)
                 }
                 Text("Update available",fontSize=22.sp,fontWeight=FontWeight.Bold)
-                Text("JW Task Scheduler · ${update.version}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("JW Scheduler Preview · ${update.version}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 Text("What's new",fontSize=14.sp,fontWeight=FontWeight.SemiBold)
                 val notes=update.notes.lineSequence().map { it.trim().trimStart('#').trim().removePrefix("- ").removePrefix("* ").replace("**", "") }.filter { it.isNotBlank() }.toList()
@@ -688,7 +744,7 @@ private fun LoadingSplashScreen() {
             modifier = Modifier.size(196.dp).graphicsLayer(scaleX = scale, scaleY = scale).clip(RoundedCornerShape(44.dp)),
             contentScale = ContentScale.Fit
         )
-        Text("JW Task Scheduler", fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 24.dp))
+        Text("JW Scheduler Preview", fontSize = 21.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 24.dp))
         Text("Preparing your schedule", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp, bottom = 22.dp))
         LinearProgressIndicator(
             modifier = Modifier.width(220.dp).height(4.dp).clip(RoundedCornerShape(50)),
@@ -704,7 +760,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
     var creating by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Text("JW Task Scheduler", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
+        Text("JW Scheduler Preview", color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.Bold, fontSize = 23.sp, modifier = Modifier.padding(top = 14.dp))
         Text("Choose how your congregation stores its schedule", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp, bottom = 22.dp))
         Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant), modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -724,6 +780,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
                         Text("Set up local workspace")
                     }
                 }
+                if(!BuildConfig.NAV_PREVIEW) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text("Shared sync", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Text("Sign in to a shared workspace to sync this congregation across devices. Your administrator provides the account.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
@@ -731,6 +788,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
                     Icon(MaterialSymbol("cloud"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text("Connect shared workspace")
+                }
                 }
             }
         }
@@ -742,7 +800,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Image(painterResource(R.drawable.csp_logo), null, modifier = Modifier.size(68.dp).clip(RoundedCornerShape(18.dp)))
-        Spacer(Modifier.height(15.dp)); Text("JW Task Scheduler", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.height(15.dp)); Text("JW Scheduler Preview", fontWeight = FontWeight.Bold, fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
         Spacer(Modifier.height(28.dp)); Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
             Column(Modifier.padding(22.dp)) {
                 Text("Welcome back", fontWeight = FontWeight.Bold, fontSize = 23.sp); Text("Sign in to your workspace", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 20.dp))
@@ -2123,7 +2181,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 }
                 val backup = store.autoBackup.value
                 PreferenceRow(icon="download",title="Automatic backup",subtitle=when {
-                    backup.folderName != null -> "${backup.folderName} · JW Task Scheduler Auto.bcdv"
+                    backup.folderName != null -> "${backup.folderName} · JW Scheduler Preview Auto.bcdv"
                     else -> "Save a .bcdv copy to a folder you choose"
                 }) {
                     Switch(checked=backup.enabled,onCheckedChange=onAutoBackupToggle,colors=appSwitchColors())
@@ -2456,7 +2514,7 @@ private fun ProfileDialog(
     onDismiss: () -> Unit,
     onSave: suspend (String) -> Unit,
     onSignOut: () -> Unit,
-    onPhotoSelected: (Uri) -> Unit
+    onRequestPhoto: () -> Unit
 ) {
     var name by remember(user.id, user.displayName) { mutableStateOf(user.displayName) }
     var editingName by remember(user.id) { mutableStateOf(false) }
@@ -2465,7 +2523,6 @@ private fun ProfileDialog(
     val scope=rememberCoroutineScope()
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { it?.let(onPhotoSelected) }
     LaunchedEffect(expanded) {
         if(!expanded) { editingName=false; error=null; name=user.displayName }
     }
@@ -2503,7 +2560,7 @@ private fun ProfileDialog(
             }
             HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick={picker.launch("image/*")},enabled=!saving,modifier=Modifier.weight(1f).heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=6.dp)) {
+                TextButton(onClick=onRequestPhoto,enabled=!saving,modifier=Modifier.weight(1f).heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=6.dp)) {
                     Icon(MaterialSymbol("camera"),null,Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Change photo",fontSize=12.sp,maxLines=2)
                 }
                 TextButton(onClick={name=user.displayName;editingName=true},enabled=!saving && !editingName,modifier=Modifier.weight(1f).heightIn(min=48.dp),contentPadding=PaddingValues(horizontal=8.dp,vertical=6.dp)) {
@@ -2960,12 +3017,14 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "code", "github" -> Icons.TwoTone.Code
     "mic" -> Icons.TwoTone.Mic
     "event", "calendar" -> Icons.TwoTone.Event
+    "more_horiz" -> Icons.TwoTone.MoreHoriz
     "menu" -> Icons.TwoTone.Menu
     "search" -> Icons.TwoTone.Search
     "close" -> Icons.TwoTone.Close
     "check" -> Icons.TwoTone.Check
     else -> Icons.TwoTone.Info
 }
+
 
 
 
