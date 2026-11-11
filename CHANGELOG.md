@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.59
+- Added optional biometric app lock in App Preferences, with supported strong fingerprint/face authentication and phone PIN, pattern or password fallback.
+- Require system authentication before enabling or disabling app lock.
+- Protect cold launches and lock immediately when the app goes into the background, including local workspaces.
+- Hide workspace content behind a secure lock window and block screenshots while app lock is enabled.
+- Retain editing and photo-picker state while locked; cancellation or failed authentication never opens the workspace.
+
 ## 1.0.58
 - People Directory now displays the configured workspace group count instead of Groups 1–9.
 - Add/Edit person uses the workspace configuration in shared and local modes, including group choices and eligible meeting labels.
