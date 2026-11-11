@@ -26,9 +26,9 @@ class NavPreviewSmokeTest {
         device.setOrientationNatural()
     }
     private fun capture(name:String) {
-        val folder=context.getExternalFilesDir(null)!!
-        folder.mkdirs()
-        assertTrue(device.takeScreenshot(File(folder,name)))
+        // Use shell-owned shared screenshots so Gradle's test uninstall cannot delete them.
+        device.executeShellCommand("screencap -p /sdcard/Download/$name")
+        assertTrue(device.executeShellCommand("ls -l /sdcard/Download/$name").contains(name))
     }
     @Test fun separatePackageAndBottomNavigationWorkInBothOrientations() {
         assertEquals("com.quarry.congregationscheduler.navtest",context.packageName)

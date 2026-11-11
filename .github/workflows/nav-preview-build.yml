@@ -48,12 +48,13 @@ jobs:
           script: |
             adb install production-baseline.apk
             gradle --no-daemon :app:connectedDebugAndroidTest
+            adb install app/build/outputs/apk/debug/app-debug.apk
             adb shell pm list packages | grep -x 'package:com.quarry.congregationscheduler'
             adb shell pm list packages | grep -x 'package:com.quarry.congregationscheduler.navtest'
             mkdir -p preview-artifacts
-            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-light.png preview-artifacts/
-            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-dark.png preview-artifacts/
-            adb pull /sdcard/Android/data/com.quarry.congregationscheduler.navtest/files/nav-preview-landscape.png preview-artifacts/
+            adb pull /sdcard/Download/nav-preview-light.png preview-artifacts/
+            adb pull /sdcard/Download/nav-preview-dark.png preview-artifacts/
+            adb pull /sdcard/Download/nav-preview-landscape.png preview-artifacts/
       - name: Prepare installable preview
         run: |
           cp app/build/outputs/apk/debug/app-debug.apk preview-artifacts/JW-Scheduler-Navigation-Preview.apk
