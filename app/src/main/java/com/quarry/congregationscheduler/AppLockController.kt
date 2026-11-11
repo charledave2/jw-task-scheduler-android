@@ -119,6 +119,10 @@ class AppLockController(private val activity: AppCompatActivity) {
     @Suppress("DEPRECATION")
     private fun launchCredential(ticket: Long) {
         if (disposed || policy.pending?.id != ticket) return
+        if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            finish(ticket, false, "Authentication paused. Tap Unlock when you return.")
+            return
+        }
         val intent = keyguard.createConfirmDeviceCredentialIntent("JW Task Scheduler", "Confirm your phone screen lock")
         if (intent == null) { finish(ticket, false, "Configure a screen lock in phone Settings, then try again."); return }
         credentialTicket = ticket
