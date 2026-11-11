@@ -742,6 +742,8 @@ private fun LoadingSplashScreen() {
         label = "halo-breathe"
     )
     val reveal = remember { Animatable(0f) }
+    val logoEntranceLift = with(LocalDensity.current) { (if (compact) 14.dp else 18.dp).toPx() }
+    val titleEntranceLift = with(LocalDensity.current) { (if (compact) 8.dp else 10.dp).toPx() }
     LaunchedEffect(Unit) { reveal.animateTo(1f, tween(1000, delayMillis = 100, easing = FastOutSlowInEasing)) }
 
     Column(
@@ -794,7 +796,7 @@ private fun LoadingSplashScreen() {
                 alpha = reveal.value
                 scaleX = (.80f + .20f * reveal.value) * pulse
                 scaleY = (.80f + .20f * reveal.value) * pulse
-                translationY = (1f - reveal.value) * 18.dp.toPx()
+                translationY = (1f - reveal.value) * logoEntranceLift
             }, contentAlignment = Alignment.Center) {
                 Image(
                     painterResource(R.drawable.csp_logo), null,
@@ -821,7 +823,7 @@ private fun LoadingSplashScreen() {
             fontSize = if (compact) 19.sp else 22.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.graphicsLayer(alpha = reveal.value, translationY = (1f - reveal.value) * 10.dp.toPx()).padding(top = 9.dp)
+            modifier = Modifier.graphicsLayer(alpha = reveal.value, translationY = (1f - reveal.value) * titleEntranceLift).padding(top = 9.dp)
         )
         Text(
             "SCHEDULE  ·  ORGANIZE  ·  SERVE",
