@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.60
+- Replaced the hamburger drawer with a forest-green bottom navigation bar for Home, Calendar, Manage, People, and More.
+- Added a prominent animated center button that opens Manage Schedule, with permission-aware Calendar and Home fallbacks.
+- Moved reports, task review, Export Studio, Settings & Accounts, and profile actions into More.
+- Kept shared sign-in, cloud data, biometric lock, and in-app updates in the official app.
+
+
 ## 1.0.59
 - Added optional biometric app lock in App Preferences, with supported strong fingerprint/face authentication and phone PIN, pattern or password fallback.
 - Require system authentication before enabling or disabling app lock.
