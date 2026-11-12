@@ -47,6 +47,18 @@ data class ScheduleData(val people: List<Person>, val meetings: List<Meeting>, v
 data class ManagedUser(val id: String, val username: String, val displayName: String, val role: String, val active: Boolean, val hasAvatar: Boolean = false, val avatarUpdatedAt: String = "", val permissions: String = "{}")
 data class TaskReview(val date: String, val type: String, val department: String, val slotKey: String, val personId: String, val personName: String, val status: String, val note: String = "")
 
+private fun taskReviewNote(substitute: Person?, reason: String): String = JSONObject()
+    .put("reason", reason)
+    .put("substitute_person_id", substitute?.id ?: JSONObject.NULL)
+    .put("substitute_person_name", substitute?.name ?: "")
+    .toString()
+
+fun TaskReview.substitutePersonId(): String? = runCatching { JSONObject(note).optString("substitute_person_id").takeIf { it.isNotBlank() && it != "null" } }.getOrNull()
+fun TaskReview.substitutePersonName(): String? = runCatching { JSONObject(note).optString("substitute_person_name").takeIf { it.isNotBlank() } }.getOrNull()
+fun TaskReview.displayStatus(): String = if (status == "excused" && runCatching { JSONObject(note).optString("reason") == "cancelled" }.getOrDefault(false)) "Cancelled" else when(status) { "completed" -> "Completed"; "not_completed" -> "Not completed"; "excused" -> "Excused"; else -> status }
+fun TaskReview.creditedPersonId(): String = if (status == "completed") substitutePersonId() ?: personId else personId
+fun TaskReview.belongsToPersonHistory(personId: String): Boolean = if (status == "completed") creditedPersonId() == personId else this.personId == personId
+
 class ApiClient(context: Context) {
     private val tokens = TokenStore(context)
     fun hasSession(): Boolean = !tokens.getAccess().isNullOrBlank() || !tokens.getRefresh().isNullOrBlank()
@@ -175,10 +187,12 @@ class ApiClient(context: Context) {
         )}}
     }
 
-    suspend fun saveTaskReview(meeting: Meeting, slot: Slot, status: String) = withContext(Dispatchers.IO) {
+    suspend fun saveTaskReview(meeting: Meeting, slot: Slot, status: String, substitute: Person?, reason: String) = withContext(Dispatchers.IO) {
+        val storedStatus = if (status == "cancelled") "excused" else status
         request("api/workspace/task-reviews","POST",JSONObject()
             .put("meeting_date",meeting.date).put("meeting_id",meeting.type).put("department_id",slot.department)
-            .put("role_id",slot.key).put("person_id",slot.personId?.toIntOrNull()).put("status",status))
+            .put("role_id",slot.key).put("person_id",slot.personId?.toIntOrNull()).put("status",storedStatus)
+            .put("note",taskReviewNote(substitute,reason)))
     }
 
     suspend fun assign(meeting: Meeting, slot: Slot, person: Person?): Unit = withContext(Dispatchers.IO) {

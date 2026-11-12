@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.63
+- Move People Directory into More and put Export Studio and Task Review on the main navigation bar.
+- Add a More shortcut to the app bar.
+- Ask administrators who substituted when a task is marked excused or cancelled.
+- Credit completed substitute assignments to the substitute while keeping excused and missed task history with the originally assigned person.
+- Add a separate debug application ID and label for installable test builds.
+
+
 ## 1.0.62
 - Show assigned tasks in Weekly Task Review on the meeting day and keep them visible until an administrator reviews each task.
 - Clarify the empty state when no meeting day with assigned tasks has arrived this week.
