@@ -668,8 +668,39 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
 }
 @Composable
 private fun PreviewNavigationItem(label:String,icon:String,selected:Boolean,modifier:Modifier,compact:Boolean,onClick:()->Unit) {
-    Column(modifier.clip(RoundedCornerShape(14.dp)).clickable(onClick=onClick).semantics{contentDescription=if(label=="More")"More navigation" else label;role=Role.Button}.heightIn(min=48.dp).padding(vertical=5.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(3.dp)) {
-        Icon(MaterialSymbol(icon),null,Modifier.size(if(compact)21.dp else 24.dp),if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+    val scope=rememberCoroutineScope()
+    val scale=remember{Animatable(1f)}
+    val rotation=remember{Animatable(0f)}
+    var tapMotion by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
+    Column(
+        modifier.clip(RoundedCornerShape(14.dp))
+            .clickable {
+                tapMotion?.cancel()
+                tapMotion=scope.launch {
+                    launch {
+                        scale.animateTo(.78f,tween(65))
+                        scale.animateTo(1.13f,spring(dampingRatio=.42f,stiffness=520f))
+                        scale.animateTo(1f,spring(dampingRatio=.55f,stiffness=520f))
+                    }
+                    launch {
+                        rotation.animateTo(if(icon=="users-round")9f else -10f,tween(90))
+                        rotation.animateTo(if(icon=="users-round")-6f else 6f,tween(90))
+                        rotation.animateTo(0f,spring(dampingRatio=.5f,stiffness=500f))
+                    }
+                }
+                onClick()
+            }
+            .semantics{contentDescription=if(label=="More")"More navigation" else label;role=Role.Button}
+            .heightIn(min=48.dp).padding(vertical=5.dp),
+        horizontalAlignment=Alignment.CenterHorizontally,
+        verticalArrangement=Arrangement.spacedBy(3.dp)
+    ) {
+        Icon(
+            MaterialSymbol(icon),null,
+            Modifier.size(if(compact)21.dp else 24.dp)
+                .graphicsLayer(scaleX=scale.value,scaleY=scale.value,rotationZ=rotation.value),
+            if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+        )
         Text(label,fontSize=if(compact)9.sp else 10.sp,fontWeight=if(selected)FontWeight.Bold else FontWeight.Normal,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
         Box(Modifier.size(4.dp).clip(CircleShape).background(if(selected)MaterialTheme.colorScheme.primary else Color.Transparent))
     }
@@ -1697,7 +1728,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
         loading = true
         try {
             val result = store.loadReviewRange(weekStart, weekEnd)
-            meetings = result.first.filter { it.date < LocalDate.now().toString() && it.slots.any { slot -> slot.personId != null } }.sortedWith(compareBy({ it.date }, { mapOf("thursday" to 0, "saturday" to 1, "sunday" to 2)[it.type] ?: 9 }))
+            meetings = result.first.filter { it.date <= LocalDate.now().toString() && it.slots.any { slot -> slot.personId != null } }.sortedWith(compareBy({ it.date }, { mapOf("thursday" to 0, "saturday" to 1, "sunday" to 2)[it.type] ?: 9 }))
             reviews = result.second
             loadError = false
         } catch (_: Exception) { meetings = emptyList(); reviews = emptyList(); loadError = true }
@@ -1720,6 +1751,13 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
         }
         if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         else if (loadError) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Could not load this week. Check your connection and try again.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+        else if (meetings.isEmpty()) {
+            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
+                Text("No meetings to review yet", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
+                Text("Assigned tasks will appear here on or after the meeting day.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
+            }
+        }
         else if (meetings.none { meeting -> meeting.slots.any { it.personId != null && statusBySlot["${meeting.date}|${meeting.type}|${it.department}|${it.key.removePrefix("dept:")}"] == null } }) {
             Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Icon(MaterialSymbol("task-alt"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
