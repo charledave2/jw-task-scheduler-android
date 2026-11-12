@@ -220,6 +220,10 @@ class AppStore(context: android.content.Context) {
         try {
             if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
             else { cloudConfig.value = api.loadWorkspaceConfig(); data.value = api.loadSchedule(month.value, cloudConfig.value) }
+            if (month.value == YearMonth.now()) {
+                if (canOpenPage("Schedule Calendar")) ScheduleWidgets.update(appContext, data.value)
+                else ScheduleWidgets.clear(appContext)
+            }
             // Keep schedules usable while the Cloudflare migration/API update is being deployed.
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
@@ -369,7 +373,7 @@ class AppStore(context: android.content.Context) {
         dark.value = enabled
         preferences.edit().putBoolean("dark_appearance", enabled).apply()
     }
-    suspend fun signOut() { if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
+    suspend fun signOut() { ScheduleWidgets.clear(appContext); if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
