@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.62
+- Show assigned tasks in Weekly Task Review on the meeting day and keep them visible until an administrator reviews each task.
+- Clarify the empty state when no meeting day with assigned tasks has arrived this week.
+- Animate the Home, Calendar, People, and More navigation icons with a spring bounce and tilt on tap.
+
+
 ## 1.0.61
 - Added an animated forest-green splash screen with a softly glowing calendar constellation, orbiting schedule, people, and completion icons, and a checkmark reveal.
 - Adapted the splash layout and animation for landscape and short screens.
