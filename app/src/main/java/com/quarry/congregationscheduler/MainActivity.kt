@@ -1853,7 +1853,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Triple("cancelled", "Cancelled", "Record that the original assignment was cancelled.")
                     )
                     options.forEach { (status, title, description) ->
-                        val selectedStatus = currentStatus == status || (status == "cancelled" && existingReview?.displayStatus() == "Cancelled")
+                        val selectedStatus = if (status == "cancelled") existingReview?.displayStatus() == "Cancelled" else currentStatus == status
                         val accent = when (status) { "completed" -> Color(0xFF4E8B62); "not_completed" -> Color(0xFFB75C55); else -> MaterialTheme.colorScheme.onSurfaceVariant }
                         Surface(
                             onClick = {
