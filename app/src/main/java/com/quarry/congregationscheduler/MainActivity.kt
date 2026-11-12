@@ -1728,6 +1728,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
     var selected by remember { mutableStateOf<Pair<Meeting, Slot>?>(null) }
     var substituteChoice by remember { mutableStateOf<Triple<Meeting, Slot, String>?>(null) }
     var selectedSubstituteId by remember { mutableStateOf<String?>(null) }
+    var pendingOriginalStatus by remember { mutableStateOf<String?>(null) }
     var expanded by remember(weekStart) { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf(false) }
@@ -1859,6 +1860,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             onClick = {
                                 if (status == "excused" || status == "cancelled") {
                                     selectedSubstituteId = existingReview?.substitutePersonId()
+                                    pendingOriginalStatus = existingReview?.initialPersonStatus()
                                     substituteChoice = Triple(meeting, slot, status)
                                     selected = null
                                 } else {
@@ -1915,7 +1917,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Button(onClick = {
                             val substitute = candidates.firstOrNull { it.id == selectedSubstituteId }
                             substituteChoice = null
-                            scope.launch { onReview(meeting, slot, status, substitute, existingReview?.initialPersonStatus()); refresh++ }
+                            scope.launch { onReview(meeting, slot, status, substitute, pendingOriginalStatus); refresh++ }
                         }) { Text("Save") }
                     }
                 }
