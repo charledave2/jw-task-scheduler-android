@@ -217,9 +217,16 @@ class AppStore(context: android.content.Context) {
         }
         catch (e: Exception) { error.value = e.message ?: "Could not load the schedule."; throw e }
     }
-    suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String) {
-        val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", status)
-        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status)
+    suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null, originalStatus: String? = null) {
+        val reason = if (status == "cancelled") "cancelled" else status
+        val savedStatus = if (status == "cancelled") "excused" else status
+        val historyStatus = originalStatus ?: status.takeIf { it in setOf("excused", "cancelled", "not_completed") }
+        val note = org.json.JSONObject().put("reason", reason)
+            .put("original_status", historyStatus ?: org.json.JSONObject.NULL)
+            .put("substitute_person_id", substitute?.id ?: org.json.JSONObject.NULL)
+            .put("substitute_person_name", substitute?.name ?: "").toString()
+        val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", savedStatus, note)
+        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status, substitute, reason, historyStatus)
         allTaskReviews.value = null
         val reviewedMonth = YearMonth.from(LocalDate.parse(meeting.date))
         taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) local.reviews(reviewedMonth) else api.loadTaskReviews(reviewedMonth)
@@ -496,6 +503,7 @@ fun SchedulerApp(appLock: AppLockController) {
                         TopAppBar(
                             title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             navigationIcon = { Image(painterResource(R.drawable.csp_logo),null,Modifier.padding(start=16.dp,end=10.dp).size(32.dp).clip(RoundedCornerShape(9.dp))) },
+                            actions = { IconButton(onClick = { moreOpen = true }) { Icon(MaterialSymbol("more_horiz"), "More") } },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                         )
                     },
@@ -511,7 +519,7 @@ fun SchedulerApp(appLock: AppLockController) {
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
-                            "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status -> try { store.reviewTask(meeting, slot, status); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
+                            "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
                             "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
@@ -533,9 +541,8 @@ fun SchedulerApp(appLock: AppLockController) {
                 Column(Modifier.fillMaxWidth().heightIn(max=(LocalConfiguration.current.screenHeightDp*.72f).dp).verticalScroll(rememberScrollState()).navigationBarsPadding().padding(horizontal=20.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
                     Text("More",fontSize=22.sp,fontWeight=FontWeight.Bold)
                     val tools=buildList {
+                        add("People Directory" to "users-round")
                         add("Reports" to "chart")
-                        if(signedIn.role in setOf("admin","assistant"))add("Task Review" to "clipboard-check")
-                        add("Export Studio" to "file-down")
                         add("Settings & Accounts" to "settings")
                     }.filter{store.canOpenPage(it.first)}
                     tools.forEach { (destination,icon) ->
@@ -611,8 +618,12 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
     val primary=primaryNavigationPage(canOpen)
     val primaryLabel=when(primary){"Manage Schedule"->"Manage";"Schedule Calendar"->"Calendar";else->"Home"}
     val primaryIcon=when(primary){"Manage Schedule"->"calendar-check";"Schedule Calendar"->"calendar-days";else->"house"}
-    val regular=listOf(Triple("Home","Home","house"),Triple("Schedule Calendar","Calendar","calendar-days"),Triple("People Directory","People","users-round"))
-        .filter{it.first!=primary && canOpen(it.first)}+Triple("More","More","more_horiz")
+    val regular=listOf(
+        Triple("Home","Home","house"),
+        Triple("Schedule Calendar","Calendar","calendar-days"),
+        Triple("Export Studio","Export","file-down"),
+        Triple("Task Review","Review","clipboard-check")
+    ).filter{it.first!=primary && canOpen(it.first)}
     val left=regular.take(2)
     val right=regular.drop(2)
     val scale=remember{Animatable(1f)}
@@ -638,15 +649,15 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
         Box(Modifier.widthIn(max=600.dp).fillMaxWidth().height(totalHeight)) {
             Surface(Modifier.fillMaxSize(),shape=shape,color=MaterialTheme.colorScheme.surfaceContainerHigh,shadowElevation=7.dp,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.6f))) {}
             Row(Modifier.fillMaxWidth().height(barHeight).align(Alignment.BottomCenter).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                fun isCurrent(destination:String)=if(destination=="More") moreOpen || page in listOf("Reports","Task Review","Top Performers","Export Studio","Settings & Accounts") else canonicalPage(page)==destination
+                fun isCurrent(destination:String)=canonicalPage(page)==destination
                 for(index in 0..1) {
                     val item=left.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){onNavigate(item.first)}
                 }
                 Spacer(Modifier.width(if(compact)64.dp else 78.dp))
                 for(index in 0..1) {
                     val item=right.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){onNavigate(item.first)}
                 }
             }
             Column(Modifier.align(Alignment.TopCenter).padding(top=4.dp),horizontalAlignment=Alignment.CenterHorizontally) {
@@ -1038,14 +1049,11 @@ private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, mo
     } else {
         reviews.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
     }
-    val ranking = periodReviews.filter { it.department == department && it.status != "excused" }
-        .groupBy { it.personId }
-        .mapNotNull { (id, rows) ->
-            val person = people.firstOrNull { it.id == id } ?: return@mapNotNull null
-            val done = rows.count { it.status == "completed" }
-            val total = rows.size
-            if (total == 0) null else Triple(person, done, done * 100 / total)
-        }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
+    val ranking = people.mapNotNull { person ->
+        val rows = periodReviews.filter { it.department == department && it.status != "excused" && if (it.status == "completed") it.creditedPersonId() == person.id else it.personId == person.id }
+        val done = rows.count { it.status == "completed" }
+        if (rows.isEmpty()) null else Triple(person, done, done * 100 / rows.size)
+    }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
     Column {
         SectionTitle("Top performer", if (period == "Overall") "Overall" else month.format(DateTimeFormatter.ofPattern("MMM yyyy"))) { }
         Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
@@ -1116,7 +1124,7 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
         localConfig = store.workspaceConfig,
         person = person,
         photo = store.personPhotos.value[person.id],
-        completedTasks = store.taskReviews.value.filter { it.personId == person.id && it.status == "completed" }.sortedByDescending { it.date },
+        completedTasks = store.taskReviews.value.filter { it.belongsToPersonHistory(person.id) }.sortedByDescending { it.date },
         completedMonth = store.month.value,
         onDismiss = { editing = null },
         onSave = { updated -> store.savePerson(updated) },
@@ -1453,6 +1461,8 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
 
 @Composable
 private fun PeopleScreen(store: AppStore) {
+    val historyReviews = store.allTaskReviews.value ?: store.taskReviews.value
+    LaunchedEffect(Unit) { runCatching { store.loadAllTaskReviews() } }
     val people = store.data.value?.people.orEmpty()
     val admin = store.user.value?.role == "admin"
     var query by remember { mutableStateOf("") }; var filter by remember { mutableStateOf("All Status") }
@@ -1484,8 +1494,7 @@ private fun PeopleScreen(store: AppStore) {
         person = editingPerson,
         photo = editingPerson?.let { store.personPhotos.value[it.id] },
         completedTasks = editingPerson?.let { person ->
-            store.taskReviews.value.filter { it.personId == person.id && it.status == "completed" }
-                .sortedByDescending { it.date }
+            historyReviews.filter { it.belongsToPersonHistory(person.id) }.sortedByDescending { it.date }
         }.orEmpty(),
         completedMonth = store.month.value,
         onDismiss = { editorOpen = false },
@@ -1552,18 +1561,18 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Icon(MaterialSymbol("award"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                                            Text("Completed assignments", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                            Text(completedMonth.format(DateTimeFormatter.ofPattern("MMMM yyyy")), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("Task history", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                            Text("All reviewed assignments", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         Text(completedTasks.size.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                     }
                                     completedTasks.take(4).forEach { task ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(task.slotKey.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase), modifier = Modifier.weight(1f), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface)
-                                            Text("${meetingLabel(task.type).replaceFirstChar(Char::uppercase)} · ${friendlyDate(task.date)}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("${task.displayStatusFor(person?.id.orEmpty())} · ${friendlyDate(task.date)}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
-                                    if (completedTasks.size > 4) Text("+${completedTasks.size - 4} more completed", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                                    if (completedTasks.size > 4) Text("+${completedTasks.size - 4} more history items", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
                                 }
                             }
                         } else if (!isNew) {
@@ -1572,7 +1581,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                     Icon(MaterialSymbol("award"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                                     Column(Modifier.weight(1f).padding(start = 8.dp)) {
                                         Text("Completed assignments", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("No completed tasks in ${completedMonth.format(DateTimeFormatter.ofPattern("MMMM"))}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("No reviewed tasks yet", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Text("0", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -1711,12 +1720,15 @@ private fun PersonRoleToggle(label: String, checked: Boolean, onChange: (Boolean
 }
 
 @Composable
-private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, onReview: suspend (Meeting, Slot, String) -> Unit) {
+private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, onReview: suspend (Meeting, Slot, String, Person?, String?) -> Unit) {
     val scope = rememberCoroutineScope()
     var weekStart by remember { mutableStateOf(LocalDate.now().minusDays((LocalDate.now().dayOfWeek.value - 1).toLong())) }
     var meetings by remember { mutableStateOf<List<Meeting>>(emptyList()) }
     var reviews by remember { mutableStateOf<List<TaskReview>>(emptyList()) }
     var selected by remember { mutableStateOf<Pair<Meeting, Slot>?>(null) }
+    var substituteChoice by remember { mutableStateOf<Triple<Meeting, Slot, String>?>(null) }
+    var selectedSubstituteId by remember { mutableStateOf<String?>(null) }
+    var pendingOriginalStatus by remember { mutableStateOf<String?>(null) }
     var expanded by remember(weekStart) { mutableStateOf<Set<String>>(emptySet()) }
     var loading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf(false) }
@@ -1787,8 +1799,9 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                                 Column(Modifier.weight(1f)) {
                                     Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text(slot.name ?: "Assigned personnel", fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 2.dp))
+                                    review?.substitutePersonName()?.let { substituteName -> Text("Substitute: $substituteName", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary) }
                                 }
-                                val statusText = when (review?.status) { "completed" -> "Completed"; "not_completed" -> "Not completed"; "excused" -> "Excused"; else -> "Review" }
+                                val statusText = review?.displayStatus() ?: "Review"
                                 Surface(shape = RoundedCornerShape(50), color = if (review == null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
                                     Text(statusText, Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 10.sp, color = if (review == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
                                 }
@@ -1803,7 +1816,8 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
     selected?.let { (meeting, slot) ->
         val person = store.data.value?.people?.firstOrNull { it.id == slot.personId }
         LaunchedEffect(person?.id, person?.avatarUpdatedAt) { if (person?.avatarUpdatedAt != null) store.loadPersonPhoto(person.id) }
-        val currentStatus = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}"]?.status
+        val existingReview = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}"]
+        val currentStatus = existingReview?.status
         Dialog(onDismissRequest = { selected = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Card(
                 modifier = Modifier.fillMaxWidth(.92f).heightIn(max = 560.dp),
@@ -1836,13 +1850,25 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                     val options = listOf(
                         Triple("completed", "Completed", "The assigned task was fulfilled."),
                         Triple("not_completed", "Not completed", "The assigned task was not fulfilled."),
-                        Triple("excused", "Excused", "Exclude this task from performance totals.")
+                        Triple("excused", "Excused", "Mark the original assignment as excused."),
+                        Triple("cancelled", "Cancelled", "Record that the original assignment was cancelled.")
                     )
                     options.forEach { (status, title, description) ->
-                        val selectedStatus = currentStatus == status
+                        val selectedStatus = if (status == "cancelled") existingReview?.displayStatus() == "Cancelled" else currentStatus == status
                         val accent = when (status) { "completed" -> Color(0xFF4E8B62); "not_completed" -> Color(0xFFB75C55); else -> MaterialTheme.colorScheme.onSurfaceVariant }
                         Surface(
-                            onClick = { selected = null; scope.launch { onReview(meeting, slot, status); refresh++ } },
+                            onClick = {
+                                if (status == "excused" || status == "cancelled") {
+                                    selectedSubstituteId = existingReview?.substitutePersonId()
+                                    pendingOriginalStatus = existingReview?.initialPersonStatus()
+                                    substituteChoice = Triple(meeting, slot, status)
+                                    selected = null
+                                } else {
+                                    val substitute = existingReview?.substitutePersonId()?.let { id -> store.data.value?.people?.firstOrNull { it.id == id } }
+                                    selected = null
+                                    scope.launch { onReview(meeting, slot, status, substitute, existingReview?.initialPersonStatus()); refresh++ }
+                                }
+                            },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                             shape = RoundedCornerShape(15.dp),
                             color = if (selectedStatus) accent.copy(alpha = .13f) else MaterialTheme.colorScheme.surface,
@@ -1861,6 +1887,39 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         }
                     }
                     TextButton(onClick = { selected = null }, modifier = Modifier.align(Alignment.End).padding(top = 5.dp)) { Text("Cancel") }
+                }
+            }
+        }
+    }
+    substituteChoice?.let { (meeting, slot, status) ->
+        val assignedOnDay = store.data.value?.meetings.orEmpty().filter { it.date == meeting.date }
+            .flatMap { it.slots.filterNot { current -> it.type == meeting.type && current.key == slot.key && current.department == slot.department } }
+            .mapNotNull { it.personId }.toSet()
+        val candidates = store.data.value?.people.orEmpty().filter { it.id != slot.personId && it.id !in assignedOnDay && personEligible(it, meeting, slot) }
+        Dialog(onDismissRequest = { substituteChoice = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Card(Modifier.fillMaxWidth(.9f).heightIn(max = 560.dp), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+                Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
+                    Text(if (status == "cancelled") "Who substituted?" else "Who covered this task?", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    Text("${slot.name ?: "Assigned person"} · ${slot.label} · ${friendlyDate(meeting.date)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { selectedSubstituteId = null }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = selectedSubstituteId == null, onClick = { selectedSubstituteId = null })
+                        Text("No substitute", fontSize = 13.sp)
+                    }
+                    candidates.forEach { candidate ->
+                        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { selectedSubstituteId = candidate.id }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = selectedSubstituteId == candidate.id, onClick = { selectedSubstituteId = candidate.id })
+                            Avatar(candidate.name, 38.dp, store.personPhotos.value[candidate.id])
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(candidate.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold); Text("Group ${candidate.group}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = { substituteChoice = null }) { Text("Cancel") }
+                        Button(onClick = {
+                            val substitute = candidates.firstOrNull { it.id == selectedSubstituteId }
+                            substituteChoice = null
+                            scope.launch { onReview(meeting, slot, status, substitute, pendingOriginalStatus); refresh++ }
+                        }) { Text("Save") }
+                    }
                 }
             }
         }
@@ -1897,14 +1956,13 @@ private fun TopPerformersScreen(store: AppStore) {
         loading = false
     }
     val relevant = reviews.filter { it.department in allowedDepartments && it.status != "excused" }
-    val grouped = relevant.groupBy { it.personId }
-        .mapNotNull { (id, rows) ->
-            val person = people.firstOrNull { it.id == id } ?: return@mapNotNull null
+    val grouped = people.mapNotNull { person ->
+            val rows = relevant.filter { if (it.status == "completed") it.creditedPersonId() == person.id else it.personId == person.id }
+            if (rows.isEmpty()) return@mapNotNull null
             val completed = rows.filter { it.status == "completed" }
             val missed = rows.filter { it.status == "not_completed" }
-            PerformanceRow(person, completed, missed, if (rows.isEmpty()) 0 else completed.size * 100 / rows.size)
-        }
-        .sortedWith(compareByDescending<PerformanceRow> { it.completed.size }.thenBy { it.person.name.lowercase() })
+            PerformanceRow(person, completed, missed, completed.size * 100 / rows.size)
+        }.sortedWith(compareByDescending<PerformanceRow> { it.completed.size }.thenBy { it.person.name.lowercase() })
 
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp)) {

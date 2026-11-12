@@ -17,8 +17,8 @@ android {
         applicationId = "com.quarry.congregationscheduler"
         minSdk = 24
         targetSdk = 35
-        versionCode = 66
-        versionName = "1.0.62"
+        versionCode = 67
+        versionName = "1.0.63"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
@@ -31,6 +31,11 @@ android {
         }
     }
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".test"
+            versionNameSuffix = "-test"
+            manifestPlaceholders["appLabel"] = "JW Task Scheduler TEST"
+        }
         getByName("release") {
             signingConfig = signingConfigs.getByName("release")
         }
