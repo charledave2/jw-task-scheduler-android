@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.69
+- Fill the compact widget's square resize area with a scrollable assignment list.
+- Show every assigned non-backup personnel slot in the wide widget, with scrolling when the list is longer than the widget.
+
 ## 1.0.68
 - Allow Department Editors with Task Review page access to open the review screen.
 - Show all personnel in the substitute picker, regardless of department eligibility or another assignment that day.
