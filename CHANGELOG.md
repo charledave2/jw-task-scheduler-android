@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.64
+- Move Task Review back into More; keep Export Studio in the main navigation.
+- Show overall top performer results only on Home.
+- Replace department filter pills with horizontal swiping to view each department's top performer.
+- Keep Home performance rankings based on all reviewed history.
+
+
 ## 1.0.63
 - Move People Directory into More and put Export Studio and Task Review on the main navigation bar.
 - Add a More shortcut to the app bar.
