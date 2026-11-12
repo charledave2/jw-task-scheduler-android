@@ -19,6 +19,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.horizontalScroll
@@ -39,6 +40,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.twotone.*
 import androidx.compose.material.icons.twotone.*
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.*
 import androidx.compose.runtime.SideEffect
 import androidx.compose.animation.core.*
@@ -543,6 +545,7 @@ fun SchedulerApp(appLock: AppLockController) {
                     val tools=buildList {
                         add("People Directory" to "users-round")
                         add("Reports" to "chart")
+                        if (signedIn.role == "admin") add("Task Review" to "clipboard-check")
                         add("Settings & Accounts" to "settings")
                     }.filter{store.canOpenPage(it.first)}
                     tools.forEach { (destination,icon) ->
@@ -621,8 +624,7 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
     val regular=listOf(
         Triple("Home","Home","house"),
         Triple("Schedule Calendar","Calendar","calendar-days"),
-        Triple("Export Studio","Export","file-down"),
-        Triple("Task Review","Review","clipboard-check")
+        Triple("Export Studio","Export","file-down")
     ).filter{it.first!=primary && canOpen(it.first)}
     val left=regular.take(2)
     val right=regular.drop(2)
@@ -1006,7 +1008,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
                 LinearProgressIndicator(progress = { if (reviewed.isEmpty()) 0f else completedCount.toFloat() / reviewed.size }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(6.dp).clip(CircleShape), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.outlineVariant)
             }
         }
-        TopPerformerCard(data?.people.orEmpty(), store.taskReviews.value, store.month.value, store)
+        TopPerformerCard(data?.people.orEmpty(), store)
         }
         if(store.canOpenPage("People Directory")) {
         SectionTitle("Departments", "Directory") { onGo("People Directory") }
@@ -1029,63 +1031,80 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 }
 
 @Composable
-private fun TopPerformerCard(people: List<Person>, reviews: List<TaskReview>, month: YearMonth, store: AppStore) {
+private fun TopPerformerCard(people: List<Person>, store: AppStore) {
     val options = store.workspaceConfig?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
-    var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "mic") }
-    var period by remember { mutableStateOf("Monthly") }
-    var loadingOverall by remember { mutableStateOf(false) }
+    var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "") }
+    var loadingOverall by remember { mutableStateOf(store.allTaskReviews.value == null) }
     val label = options.firstOrNull { it.first == department }?.second ?: "Department"
+    val departmentIndex = options.indexOfFirst { it.first == department }.coerceAtLeast(0)
 
-    LaunchedEffect(period, store.allTaskReviews.value) {
-        if (period == "Overall" && store.allTaskReviews.value == null) {
+    LaunchedEffect(Unit) {
+        if (store.allTaskReviews.value == null) {
             loadingOverall = true
             runCatching { store.loadAllTaskReviews() }
             loadingOverall = false
         }
     }
 
-    val periodReviews = if (period == "Overall") {
-        store.allTaskReviews.value.orEmpty()
-    } else {
-        reviews.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
-    }
+    val periodReviews = store.allTaskReviews.value.orEmpty()
     val ranking = people.mapNotNull { person ->
         val rows = periodReviews.filter { it.department == department && it.status != "excused" && if (it.status == "completed") it.creditedPersonId() == person.id else it.personId == person.id }
         val done = rows.count { it.status == "completed" }
         if (rows.isEmpty()) null else Triple(person, done, done * 100 / rows.size)
     }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
-    Column {
-        SectionTitle("Top performer", if (period == "Overall") "Overall" else month.format(DateTimeFormatter.ofPattern("MMM yyyy"))) { }
-        Card(shape = RoundedCornerShape(17.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column(Modifier.padding(13.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    FilterPill("Overall", period == "Overall") { period = "Overall" }
-                    FilterPill("Monthly", period == "Monthly") { period = "Monthly" }
-                }
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    options.forEach { (key, text) -> FilterPill(text, department == key) { department = key } }
-                }
-                val top = ranking.firstOrNull()
-                if (loadingOverall && period == "Overall") {
-                    Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
-                } else if (top == null) {
-                    Text("No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
-                } else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                    LaunchedEffect(top.first.id, top.first.avatarUpdatedAt) { if (top.first.avatarUpdatedAt != null) store.loadPersonPhoto(top.first.id) }
-                    Box(Modifier.size(52.dp), contentAlignment = Alignment.BottomEnd) {
-                        Avatar(top.first.name, 48.dp, store.personPhotos.value[top.first.id])
-                        Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("trophy"), null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(12.dp)) }
+
+    Card(
+        modifier = Modifier.pointerInput(options, department) {
+            var drag = 0f
+            detectHorizontalDragGestures(
+                onHorizontalDrag = { change, amount -> drag += amount; change.consume() },
+                onDragEnd = {
+                    if (kotlin.math.abs(drag) > 48f && options.isNotEmpty()) {
+                        val current = options.indexOfFirst { it.first == department }.coerceAtLeast(0)
+                        val next = (current + if (drag < 0f) 1 else -1).coerceIn(0, options.lastIndex)
+                        department = options[next].first
                     }
-                    Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                        Text(top.first.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        Text("$label · ${top.second} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    Text("${top.third}%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    drag = 0f
+                },
+                onDragCancel = { drag = 0f }
+            )
+        },
+        shape = RoundedCornerShape(17.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(13.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Top performer", modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("Overall", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(MaterialSymbol("chevron-left"), null, Modifier.size(16.dp), tint = if (departmentIndex > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                Text(label, Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = if (departmentIndex < options.lastIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+            }
+            Text("Swipe to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+            val top = ranking.firstOrNull()
+            if (loadingOverall) {
+                Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+            } else if (options.isEmpty() || top == null) {
+                Text(if (options.isEmpty()) "No departments configured" else "No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+            } else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                LaunchedEffect(top.first.id, top.first.avatarUpdatedAt) { if (top.first.avatarUpdatedAt != null) store.loadPersonPhoto(top.first.id) }
+                Box(Modifier.size(52.dp), contentAlignment = Alignment.BottomEnd) {
+                    Avatar(top.first.name, 48.dp, store.personPhotos.value[top.first.id])
+                    Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("trophy"), null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(12.dp)) }
                 }
+                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                    Text(top.first.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("$label · ${top.second} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text("${top.third}%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
 }
+
 private fun timeGreeting(): String = when (LocalTime.now().hour) {
     in 5..11 -> "Good morning"
     in 12..17 -> "Good afternoon"
