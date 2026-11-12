@@ -3,7 +3,7 @@
     android:orientation="vertical" android:background="@drawable/widget_surface">
     <LinearLayout android:layout_width="match_parent" android:layout_height="62dp" android:orientation="horizontal"
         android:gravity="center_vertical" android:paddingStart="18dp" android:paddingEnd="16dp" android:background="@drawable/widget_header">
-        <ImageView android:layout_width="34dp" android:layout_height="34dp" android:src="@drawable/widget_calendar_check" android:tint="@color/widget_on_primary" android:contentDescription="Calendar" />
+        <ImageView android:layout_width="34dp" android:layout_height="34dp" android:src="@drawable/widget_calendar_check" android:contentDescription="Calendar" />
         <View android:layout_width="1dp" android:layout_height="34dp" android:layout_marginStart="14dp" android:layout_marginEnd="14dp" android:background="#88FFFFFF" />
         <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
             <TextView android:id="@+id/widget_brand" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="JW Task Scheduler" android:textColor="@color/widget_on_primary" android:textSize="15sp" android:textStyle="bold" android:fontFamily="sans-serif" />
