@@ -29,5 +29,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <receiver android:name=".CompactScheduleWidget" android:exported="true" android:label="Next Meeting">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_schedule_compact_info" />
+        </receiver>
+        <receiver android:name=".WideScheduleWidget" android:exported="true" android:label="Meeting and Assignments">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/widget_schedule_wide_info" />
+        </receiver>
     </application>
 </manifest>

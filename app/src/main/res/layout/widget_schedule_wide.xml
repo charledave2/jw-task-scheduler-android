@@ -1,0 +1,29 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@drawable/widget_surface">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="62dp" android:orientation="horizontal"
+        android:gravity="center_vertical" android:paddingStart="18dp" android:paddingEnd="16dp" android:background="@drawable/widget_header">
+        <ImageView android:layout_width="34dp" android:layout_height="34dp" android:src="@drawable/widget_calendar_check" android:tint="@color/widget_on_primary" android:contentDescription="Calendar" />
+        <View android:layout_width="1dp" android:layout_height="34dp" android:layout_marginStart="14dp" android:layout_marginEnd="14dp" android:background="#88FFFFFF" />
+        <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+            <TextView android:id="@+id/widget_brand" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="JW Task Scheduler" android:textColor="@color/widget_on_primary" android:textSize="15sp" android:textStyle="bold" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_congregation" android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Quarry Congregation" android:textColor="#D8E8DC" android:textSize="11sp" android:singleLine="true" android:ellipsize="end" android:fontFamily="sans-serif" />
+        </LinearLayout>
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="›" android:textColor="@color/widget_on_primary" android:textSize="30sp" />
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="horizontal" android:padding="14dp" android:gravity="center_vertical">
+        <LinearLayout android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1.1" android:orientation="vertical" android:gravity="center_vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_chip" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="3dp" android:paddingBottom="3dp" android:text="NEXT MEETING" android:textColor="@color/widget_primary" android:textSize="9sp" android:textStyle="bold" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_date" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="9dp" android:text="Sunday, Nov 15, 2026" android:textColor="@color/widget_on_surface" android:textSize="14sp" android:textStyle="bold" android:singleLine="true" android:ellipsize="end" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_time" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="7:45 AM" android:textColor="@color/widget_primary" android:textSize="28sp" android:textStyle="bold" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_countdown" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="In 3 days" android:textColor="@color/widget_secondary" android:textSize="11sp" android:fontFamily="sans-serif" />
+        </LinearLayout>
+        <View android:layout_width="1dp" android:layout_height="match_parent" android:layout_marginHorizontal="12dp" android:background="@color/widget_container" />
+        <LinearLayout android:id="@+id/widget_assignments" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1" android:orientation="vertical" android:gravity="center_vertical">
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:background="@drawable/widget_chip" android:paddingStart="10dp" android:paddingEnd="10dp" android:paddingTop="3dp" android:paddingBottom="3dp" android:text="ASSIGNMENTS" android:textColor="@color/widget_primary" android:textSize="9sp" android:textStyle="bold" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_assignment_1" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp" android:background="@drawable/widget_chip" android:padding="8dp" android:text="Mic Men · Charle" android:textColor="@color/widget_on_surface" android:textSize="10sp" android:singleLine="true" android:ellipsize="end" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_assignment_2" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:background="@drawable/widget_chip" android:padding="8dp" android:text="Audio/Video · Jefferson" android:textColor="@color/widget_on_surface" android:textSize="10sp" android:singleLine="true" android:ellipsize="end" android:fontFamily="sans-serif" />
+            <TextView android:id="@+id/widget_assignment_3" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="5dp" android:background="@drawable/widget_chip" android:padding="8dp" android:text="Platform · Russel" android:textColor="@color/widget_on_surface" android:textSize="10sp" android:singleLine="true" android:ellipsize="end" android:fontFamily="sans-serif" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.66
+- Add compact and wide Android home-screen widgets for the next meeting.
+- Show meeting date, time, countdown, congregation, and up to three assignments in the wide widget.
+- Refresh widgets whenever the schedule loads and daily.
+- Use Roboto, Android's reliable system sans-serif, for consistent widget typography.
+
+## 1.0.65
+- Restore More in the bottom navigation.
+- Animate department changes in Top Performer with directional slide and fade transitions.
+- Center the in-app update icon.
+- Show a success confirmation when returning from sharing a schedule.
+
 ## 1.0.64
 - Move Task Review back into More; keep Export Studio in the main navigation.
 - Show overall top performer results only on Home.
