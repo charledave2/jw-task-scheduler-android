@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.68
+- Allow Department Editors with Task Review page access to open the review screen.
+- Show all personnel in the substitute picker, regardless of department eligibility or another assignment that day.
+
 ## 1.0.67
 - Fix compact widget content alignment so it stays grouped at the top instead of floating in tall launcher cells.
 - Replace the generic calendar glyph with the app's launcher icon in both widget sizes.
