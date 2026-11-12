@@ -6,7 +6,10 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.widget.RemoteViews
+import android.widget.RemoteViewsService
+import org.json.JSONArray
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 
@@ -26,7 +29,7 @@ object ScheduleWidgets {
                 prefs.clear().putString("congregation", schedule.settings.name).putBoolean("has_meeting", false)
             } else {
                 val (date, item) = meeting
-                val assignments = item.slots.filter { !it.backup }.take(3)
+                val assignments = item.slots.filter { !it.backup && !it.personId.isNullOrBlank() }
                 prefs.putBoolean("has_meeting", true)
                     .putString("congregation", schedule.settings.name)
                     .putString("date", date.format(DateTimeFormatter.ofPattern("EEEE, MMM d, yyyy")))
@@ -35,9 +38,7 @@ object ScheduleWidgets {
                     .putString("time", widgetTime(item.time))
                     .putString("countdown", countdown(date))
                     .putString("title", item.displayLabel?.takeIf { it.isNotBlank() } ?: item.type)
-                    .putString("assignment_1", assignmentLabel(assignments.getOrNull(0)))
-                    .putString("assignment_2", assignmentLabel(assignments.getOrNull(1)))
-                    .putString("assignment_3", assignmentLabel(assignments.getOrNull(2)))
+                    .putString("assignments", JSONArray(assignments.map(::assignmentLabel)).toString())
             }
             prefs.apply()
         }
@@ -51,7 +52,10 @@ object ScheduleWidgets {
             WideScheduleWidget::class.java to R.layout.widget_schedule_wide
         ).forEach { (provider, layout) ->
             val ids = manager.getAppWidgetIds(ComponentName(context, provider))
-            ids.forEach { id -> manager.updateAppWidget(id, buildViews(context, layout)) }
+            ids.forEach { id ->
+                manager.updateAppWidget(id, buildViews(context, layout, id))
+                manager.notifyAppWidgetViewDataChanged(id, R.id.widget_assignment_list)
+            }
         }
     }
 
@@ -60,7 +64,7 @@ object ScheduleWidgets {
         refresh(context)
     }
 
-    private fun buildViews(context: Context, layout: Int): RemoteViews {
+    private fun buildViews(context: Context, layout: Int, widgetId: Int): RemoteViews {
         val views = RemoteViews(context.packageName, layout)
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val hasMeeting = prefs.getBoolean("has_meeting", false)
@@ -73,20 +77,16 @@ object ScheduleWidgets {
         views.setTextViewText(R.id.widget_countdown, if (stillUpcoming && meetingDate != null) countdown(meetingDate) else "")
         if (layout == R.layout.widget_schedule_wide) {
             views.setTextViewText(R.id.widget_meeting_title, prefs.getString("title", "NEXT MEETING") ?: "NEXT MEETING")
-            views.setTextViewText(R.id.widget_assignment_1, prefs.getString("assignment_1", "") ?: "")
-            views.setTextViewText(R.id.widget_assignment_2, prefs.getString("assignment_2", "") ?: "")
-            views.setTextViewText(R.id.widget_assignment_3, prefs.getString("assignment_3", "") ?: "")
-            listOf(
-                R.id.widget_assignment_1 to "assignment_1",
-                R.id.widget_assignment_2 to "assignment_2",
-                R.id.widget_assignment_3 to "assignment_3"
-            ).forEach { (viewId, key) ->
-                val rowVisible = stillUpcoming && !prefs.getString(key, "").isNullOrBlank()
-                views.setViewVisibility(viewId, if (rowVisible) android.view.View.VISIBLE else android.view.View.GONE)
-            }
-            val visibility = if (stillUpcoming) android.view.View.VISIBLE else android.view.View.GONE
-            views.setViewVisibility(R.id.widget_assignments, visibility)
         }
+        val assignmentRows = readAssignmentLabels(context)
+        val adapterIntent = Intent(context, ScheduleWidgetService::class.java).apply {
+            putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, widgetId)
+            data = Uri.parse(toUri(Intent.URI_INTENT_SCHEME))
+        }
+        views.setRemoteAdapter(R.id.widget_assignment_list, adapterIntent)
+        val assignmentsVisibility = if (stillUpcoming && assignmentRows.isNotEmpty()) android.view.View.VISIBLE else android.view.View.GONE
+        views.setViewVisibility(R.id.widget_assignments, assignmentsVisibility)
+        views.setViewVisibility(R.id.widget_assignment_list, assignmentsVisibility)
         val intent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -109,6 +109,12 @@ object ScheduleWidgets {
         return "$department · ${slot.name ?: "Unassigned"}"
     }
 
+    internal fun readAssignmentLabels(context: Context): List<String> = runCatching {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val values = JSONArray(prefs.getString("assignments", "[]") ?: "[]")
+        (0 until values.length()).mapNotNull { values.optString(it).takeIf(String::isNotBlank) }
+    }.getOrDefault(emptyList())
+
     private fun widgetTime(value: String): String = runCatching {
         val parts = value.split(":")
         val hour = parts[0].toInt()
@@ -129,4 +135,26 @@ class CompactScheduleWidget : AppWidgetProvider() {
 
 class WideScheduleWidget : AppWidgetProvider() {
     override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) = ScheduleWidgets.refresh(context)
+}
+
+class ScheduleWidgetService : RemoteViewsService() {
+    override fun onGetViewFactory(intent: Intent): RemoteViewsFactory = AssignmentFactory(applicationContext)
+
+    private class AssignmentFactory(private val context: Context) : RemoteViewsFactory {
+        private var labels: List<String> = emptyList()
+
+        override fun onCreate() = Unit
+        override fun onDataSetChanged() { labels = ScheduleWidgets.readAssignmentLabels(context) }
+        override fun onDestroy() { labels = emptyList() }
+        override fun getCount() = labels.size
+        override fun getViewAt(position: Int): RemoteViews? = labels.getOrNull(position)?.let { label ->
+            RemoteViews(context.packageName, R.layout.widget_assignment_row).apply {
+                setTextViewText(R.id.widget_assignment_text, label)
+            }
+        }
+        override fun getLoadingView(): RemoteViews? = null
+        override fun getViewTypeCount() = 1
+        override fun getItemId(position: Int) = position.toLong()
+        override fun hasStableIds() = true
+    }
 }

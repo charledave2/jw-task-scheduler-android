@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/widget_assignment_text"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginTop="4dp"
+    android:background="@drawable/widget_chip"
+    android:paddingStart="8dp"
+    android:paddingEnd="8dp"
+    android:paddingTop="6dp"
+    android:paddingBottom="6dp"
+    android:text="Department · Person"
+    android:textColor="@color/widget_on_surface"
+    android:textSize="10sp"
+    android:maxLines="2"
+    android:ellipsize="end"
+    android:fontFamily="sans-serif" />

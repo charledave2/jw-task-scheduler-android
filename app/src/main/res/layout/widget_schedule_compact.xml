@@ -97,4 +97,32 @@
         android:textColor="@color/widget_secondary"
         android:textSize="10sp"
         android:fontFamily="sans-serif" />
+
+    <TextView
+        android:id="@+id/widget_assignments"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="9dp"
+        android:background="@drawable/widget_chip"
+        android:paddingStart="9dp"
+        android:paddingEnd="9dp"
+        android:paddingTop="3dp"
+        android:paddingBottom="3dp"
+        android:text="ASSIGNMENTS"
+        android:textColor="@color/widget_primary"
+        android:textSize="9sp"
+        android:textStyle="bold"
+        android:fontFamily="sans-serif" />
+
+    <ListView
+        android:id="@+id/widget_assignment_list"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="2dp"
+        android:divider="@android:color/transparent"
+        android:dividerHeight="2dp"
+        android:cacheColorHint="@android:color/transparent"
+        android:scrollbars="none">
+    </ListView>
 </LinearLayout>
