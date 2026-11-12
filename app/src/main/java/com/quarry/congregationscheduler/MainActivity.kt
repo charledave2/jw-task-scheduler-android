@@ -1815,7 +1815,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
     selected?.let { (meeting, slot) ->
         val person = store.data.value?.people?.firstOrNull { it.id == slot.personId }
         LaunchedEffect(person?.id, person?.avatarUpdatedAt) { if (person?.avatarUpdatedAt != null) store.loadPersonPhoto(person.id) }
-        val existingReview = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}]
+        val existingReview = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}"]
         val currentStatus = existingReview?.status
         Dialog(onDismissRequest = { selected = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Card(
