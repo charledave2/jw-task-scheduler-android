@@ -35,6 +35,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.twotone.*
@@ -408,6 +414,8 @@ fun SchedulerApp(appLock: AppLockController) {
     }
 
     var moreOpen by remember { mutableStateOf(false) }
+    var pendingScheduleShare by remember { mutableStateOf(false) }
+    var showScheduleShareSuccess by remember { mutableStateOf(false) }
     val profilePhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if(uri!=null) scope.launch { try { store.saveAvatar(uri);snackbar.showSnackbar("Profile photo updated.") } catch(e:Exception){snackbar.showSnackbar(e.message ?: "Could not upload photo.")} }
     }
@@ -430,6 +438,10 @@ fun SchedulerApp(appLock: AppLockController) {
                 scope.launch { store.checkAppUpdate() }
             }
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                if (pendingScheduleShare) {
+                    pendingScheduleShare = false
+                    showScheduleShareSuccess = true
+                }
                 scope.launch { store.refreshPageAccess() }
             }
         }
@@ -505,7 +517,6 @@ fun SchedulerApp(appLock: AppLockController) {
                         TopAppBar(
                             title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             navigationIcon = { Image(painterResource(R.drawable.csp_logo),null,Modifier.padding(start=16.dp,end=10.dp).size(32.dp).clip(RoundedCornerShape(9.dp))) },
-                            actions = { IconButton(onClick = { moreOpen = true }) { Icon(MaterialSymbol("more_horiz"), "More") } },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                         )
                     },
@@ -523,7 +534,7 @@ fun SchedulerApp(appLock: AppLockController) {
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
                             "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
-                            "Export Studio" -> ExportScreen(store)
+                            "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
                             "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
                                 if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
                                 else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
@@ -588,6 +599,9 @@ fun SchedulerApp(appLock: AppLockController) {
                         )
                       }
         }
+        if (showScheduleShareSuccess && !appLock.locked) {
+            ScheduleShareSuccessDialog(onDismiss = { showScheduleShareSuccess = false })
+        }
         if (!appLock.locked && assignmentTarget != null && store.canOpenPage("Manage Schedule")) {
             val (meeting, slot) = assignmentTarget!!
             val occupiedOnDate = store.data.value?.meetings.orEmpty()
@@ -624,8 +638,9 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
     val regular=listOf(
         Triple("Home","Home","house"),
         Triple("Schedule Calendar","Calendar","calendar-days"),
-        Triple("Export Studio","Export","file-down")
-    ).filter{it.first!=primary && canOpen(it.first)}
+        Triple("Export Studio","Export","file-down"),
+        Triple("More","More","more_horiz")
+    ).filter{it.first!=primary && (it.first=="More" || canOpen(it.first))}
     val left=regular.take(2)
     val right=regular.drop(2)
     val scale=remember{Animatable(1f)}
@@ -651,15 +666,15 @@ private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String
         Box(Modifier.widthIn(max=600.dp).fillMaxWidth().height(totalHeight)) {
             Surface(Modifier.fillMaxSize(),shape=shape,color=MaterialTheme.colorScheme.surfaceContainerHigh,shadowElevation=7.dp,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.6f))) {}
             Row(Modifier.fillMaxWidth().height(barHeight).align(Alignment.BottomCenter).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                fun isCurrent(destination:String)=canonicalPage(page)==destination
+                fun isCurrent(destination:String)=if(destination=="More") moreOpen || page in listOf("People Directory","Reports","Task Review","Top Performers","Settings & Accounts") else canonicalPage(page)==destination
                 for(index in 0..1) {
                     val item=left.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){onNavigate(item.first)}
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
                 }
                 Spacer(Modifier.width(if(compact)64.dp else 78.dp))
                 for(index in 0..1) {
                     val item=right.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){onNavigate(item.first)}
+                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
                 }
             }
             Column(Modifier.align(Alignment.TopCenter).padding(top=4.dp),horizontalAlignment=Alignment.CenterHorizontally) {
@@ -725,8 +740,10 @@ private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: F
     Dialog(onDismissRequest={if(!downloading)onLater()}) {
         Card(Modifier.widthIn(max=480.dp).fillMaxWidth().heightIn(max=maxHeight),shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-                Surface(shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
-                    Icon(MaterialSymbol("system_update"),null,Modifier.padding(14.dp).size(30.dp),MaterialTheme.colorScheme.onPrimaryContainer)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    Surface(shape=CircleShape,color=MaterialTheme.colorScheme.primaryContainer) {
+                        Icon(MaterialSymbol("system_update"),null,Modifier.padding(14.dp).size(30.dp),MaterialTheme.colorScheme.onPrimaryContainer)
+                    }
                 }
                 Text("Update available",fontSize=22.sp,fontWeight=FontWeight.Bold)
                 Text("JW Task Scheduler · ${update.version}",fontSize=13.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
@@ -753,6 +770,30 @@ private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: F
                         Icon(MaterialSymbol("download"),null,Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Update")
                     }
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScheduleShareSuccessDialog(onDismiss: () -> Unit) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            Modifier.widthIn(max = 380.dp).fillMaxWidth(),
+            shape = RoundedCornerShape(28.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(
+                Modifier.fillMaxWidth().padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+                    Icon(MaterialSymbol("check_circle"), null, Modifier.padding(16.dp).size(34.dp), MaterialTheme.colorScheme.onPrimaryContainer)
+                }
+                Text("Schedule shared successfully", fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Text("Your schedule has been shared.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
         }
     }
@@ -1034,8 +1075,8 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
 private fun TopPerformerCard(people: List<Person>, store: AppStore) {
     val options = store.workspaceConfig?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
     var department by remember(options) { mutableStateOf(options.firstOrNull()?.first ?: "") }
+    var swipeDirection by remember { mutableIntStateOf(1) }
     var loadingOverall by remember { mutableStateOf(store.allTaskReviews.value == null) }
-    val label = options.firstOrNull { it.first == department }?.second ?: "Department"
     val departmentIndex = options.indexOfFirst { it.first == department }.coerceAtLeast(0)
 
     LaunchedEffect(Unit) {
@@ -1046,13 +1087,6 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
         }
     }
 
-    val periodReviews = store.allTaskReviews.value.orEmpty()
-    val ranking = people.mapNotNull { person ->
-        val rows = periodReviews.filter { it.department == department && it.status != "excused" && if (it.status == "completed") it.creditedPersonId() == person.id else it.personId == person.id }
-        val done = rows.count { it.status == "completed" }
-        if (rows.isEmpty()) null else Triple(person, done, done * 100 / rows.size)
-    }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
-
     Card(
         modifier = Modifier.pointerInput(options, department) {
             var drag = 0f
@@ -1061,7 +1095,8 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
                 onDragEnd = {
                     if (kotlin.math.abs(drag) > 48f && options.isNotEmpty()) {
                         val current = options.indexOfFirst { it.first == department }.coerceAtLeast(0)
-                        val next = (current + if (drag < 0f) 1 else -1).coerceIn(0, options.lastIndex)
+                        swipeDirection = if (drag < 0f) 1 else -1
+                        val next = (current + swipeDirection).coerceIn(0, options.lastIndex)
                         department = options[next].first
                     }
                     drag = 0f
@@ -1078,28 +1113,48 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
                 Text("Top performer", modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
                 Text("Overall", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(MaterialSymbol("chevron-left"), null, Modifier.size(16.dp), tint = if (departmentIndex > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
-                Text(label, Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = if (departmentIndex < options.lastIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
-            }
-            Text("Swipe to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-            val top = ranking.firstOrNull()
-            if (loadingOverall) {
-                Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
-            } else if (options.isEmpty() || top == null) {
-                Text(if (options.isEmpty()) "No departments configured" else "No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
-            } else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-                LaunchedEffect(top.first.id, top.first.avatarUpdatedAt) { if (top.first.avatarUpdatedAt != null) store.loadPersonPhoto(top.first.id) }
-                Box(Modifier.size(52.dp), contentAlignment = Alignment.BottomEnd) {
-                    Avatar(top.first.name, 48.dp, store.personPhotos.value[top.first.id])
-                    Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("trophy"), null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(12.dp)) }
+            AnimatedContent(
+                targetState = department,
+                transitionSpec = {
+                    if (swipeDirection > 0) {
+                        (slideInHorizontally { it / 3 } + fadeIn()).togetherWith(slideOutHorizontally { -it / 3 } + fadeOut())
+                    } else {
+                        (slideInHorizontally { -it / 3 } + fadeIn()).togetherWith(slideOutHorizontally { it / 3 } + fadeOut())
+                    }
+                },
+                label = "top performer department"
+            ) { activeDepartment ->
+                val label = options.firstOrNull { it.first == activeDepartment }?.second ?: "Department"
+                val ranking = people.mapNotNull { person ->
+                    val rows = store.allTaskReviews.value.orEmpty().filter { it.department == activeDepartment && it.status != "excused" && if (it.status == "completed") it.creditedPersonId() == person.id else it.personId == person.id }
+                    val done = rows.count { it.status == "completed" }
+                    if (rows.isEmpty()) null else Triple(person, done, done * 100 / rows.size)
+                }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
+                Column(Modifier.fillMaxWidth()) {
+                    Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(MaterialSymbol("chevron-left"), null, Modifier.size(16.dp), tint = if (departmentIndex > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                        Text(label, Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = if (departmentIndex < options.lastIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                    }
+                    Text("Swipe to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    val top = ranking.firstOrNull()
+                    if (loadingOverall) {
+                        Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+                    } else if (options.isEmpty() || top == null) {
+                        Text(if (options.isEmpty()) "No departments configured" else "No reviewed assignments yet", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
+                    } else Row(Modifier.fillMaxWidth().padding(top = 13.dp), verticalAlignment = Alignment.CenterVertically) {
+                        LaunchedEffect(top.first.id, top.first.avatarUpdatedAt) { if (top.first.avatarUpdatedAt != null) store.loadPersonPhoto(top.first.id) }
+                        Box(Modifier.size(52.dp), contentAlignment = Alignment.BottomEnd) {
+                            Avatar(top.first.name, 48.dp, store.personPhotos.value[top.first.id])
+                            Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("trophy"), null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(12.dp)) }
+                        }
+                        Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                            Text(top.first.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                            Text("$label · ${top.second} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Text("${top.third}%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
-                Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                    Text(top.first.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text("$label · ${top.second} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                Text("${top.third}%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -2078,7 +2133,7 @@ private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ExportScreen(store: AppStore) {
+private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
     val context = LocalContext.current
     val previewMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.58f).coerceIn(300f, 520f).dp
     val scope = rememberCoroutineScope()
@@ -2165,6 +2220,7 @@ private fun ExportScreen(store: AppStore) {
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(send, "Share schedule"))
+                        onShareLaunched()
                     } catch (e: Exception) {
                         android.widget.Toast.makeText(context, e.message ?: "Could not prepare schedule image.", android.widget.Toast.LENGTH_LONG).show()
                     }
