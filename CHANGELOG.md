@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.67
+- Fix compact widget content alignment so it stays grouped at the top instead of floating in tall launcher cells.
+- Replace the generic calendar glyph with the app's launcher icon in both widget sizes.
+- Replace unsupported separator views in the wide widget to prevent launcher loading errors.
+
 ## 1.0.66
 - Add compact and wide Android home-screen widgets for the next meeting.
 - Show meeting date, time, countdown, congregation, and up to three assignments in the wide widget.
