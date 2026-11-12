@@ -536,7 +536,7 @@ fun SchedulerApp(appLock: AppLockController) {
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
-                            "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
+                            "Task Review" -> if (store.canOpenPage("Task Review")) TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
                             "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
@@ -560,7 +560,7 @@ fun SchedulerApp(appLock: AppLockController) {
                     val tools=buildList {
                         add("People Directory" to "users-round")
                         add("Reports" to "chart")
-                        if (signedIn.role == "admin") add("Task Review" to "clipboard-check")
+                        if (signedIn.role == "admin" || signedIn.role == "assistant") add("Task Review" to "clipboard-check")
                         add("Settings & Accounts" to "settings")
                     }.filter{store.canOpenPage(it.first)}
                     tools.forEach { (destination,icon) ->
@@ -1970,10 +1970,8 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
         }
     }
     substituteChoice?.let { (meeting, slot, status) ->
-        val assignedOnDay = store.data.value?.meetings.orEmpty().filter { it.date == meeting.date }
-            .flatMap { it.slots.filterNot { current -> it.type == meeting.type && current.key == slot.key && current.department == slot.department } }
-            .mapNotNull { it.personId }.toSet()
-        val candidates = store.data.value?.people.orEmpty().filter { it.id != slot.personId && it.id !in assignedOnDay && personEligible(it, meeting, slot) }
+        // Substitute selection uses the full personnel directory, regardless of department eligibility or other assignments that day.
+        val candidates = store.data.value?.people.orEmpty().filter { it.id != slot.personId }
         Dialog(onDismissRequest = { substituteChoice = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Card(Modifier.fillMaxWidth(.9f).heightIn(max = 560.dp), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
