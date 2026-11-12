@@ -217,14 +217,16 @@ class AppStore(context: android.content.Context) {
         }
         catch (e: Exception) { error.value = e.message ?: "Could not load the schedule."; throw e }
     }
-    suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null) {
+    suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null, originalStatus: String? = null) {
         val reason = if (status == "cancelled") "cancelled" else status
         val savedStatus = if (status == "cancelled") "excused" else status
+        val historyStatus = originalStatus ?: status.takeIf { it in setOf("excused", "cancelled", "not_completed") }
         val note = org.json.JSONObject().put("reason", reason)
+            .put("original_status", historyStatus ?: org.json.JSONObject.NULL)
             .put("substitute_person_id", substitute?.id ?: org.json.JSONObject.NULL)
             .put("substitute_person_name", substitute?.name ?: "").toString()
         val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", savedStatus, note)
-        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status, substitute, reason)
+        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status, substitute, reason, historyStatus)
         allTaskReviews.value = null
         val reviewedMonth = YearMonth.from(LocalDate.parse(meeting.date))
         taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) local.reviews(reviewedMonth) else api.loadTaskReviews(reviewedMonth)
@@ -517,7 +519,7 @@ fun SchedulerApp(appLock: AppLockController) {
                             "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
                             "People Directory" -> PeopleScreen(store)
                             "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
-                            "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute -> try { store.reviewTask(meeting, slot, status, substitute); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
+                            "Task Review" -> if (store.user.value?.role == "admin") TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                             "Top Performers" -> TopPerformersScreen(store)
                             "Export Studio" -> ExportScreen(store)
                             "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
@@ -1567,7 +1569,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                     completedTasks.take(4).forEach { task ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                                             Text(task.slotKey.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase), modifier = Modifier.weight(1f), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface)
-                                            Text("${task.displayStatus()} · ${friendlyDate(task.date)}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("${task.displayStatusFor(person?.id.orEmpty())} · ${friendlyDate(task.date)}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
                                     if (completedTasks.size > 4) Text("+${completedTasks.size - 4} more history items", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
@@ -1718,7 +1720,7 @@ private fun PersonRoleToggle(label: String, checked: Boolean, onChange: (Boolean
 }
 
 @Composable
-private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, onReview: suspend (Meeting, Slot, String, Person?) -> Unit) {
+private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, onReview: suspend (Meeting, Slot, String, Person?, String?) -> Unit) {
     val scope = rememberCoroutineScope()
     var weekStart by remember { mutableStateOf(LocalDate.now().minusDays((LocalDate.now().dayOfWeek.value - 1).toLong())) }
     var meetings by remember { mutableStateOf<List<Meeting>>(emptyList()) }
@@ -1862,7 +1864,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                                 } else {
                                     val substitute = existingReview?.substitutePersonId()?.let { id -> store.data.value?.people?.firstOrNull { it.id == id } }
                                     selected = null
-                                    scope.launch { onReview(meeting, slot, status, substitute); refresh++ }
+                                    scope.launch { onReview(meeting, slot, status, substitute, existingReview?.initialPersonStatus()); refresh++ }
                                 }
                             },
                             modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -1913,7 +1915,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Button(onClick = {
                             val substitute = candidates.firstOrNull { it.id == selectedSubstituteId }
                             substituteChoice = null
-                            scope.launch { onReview(meeting, slot, status, substitute); refresh++ }
+                            scope.launch { onReview(meeting, slot, status, substitute, existingReview?.initialPersonStatus()); refresh++ }
                         }) { Text("Save") }
                     }
                 }
