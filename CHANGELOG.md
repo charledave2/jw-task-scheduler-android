@@ -168,3 +168,9 @@
 - Switching from local mode to shared mode does not upload local data.
 - Improved weekly task review and performance history reliability.
 - Updated app branding to JW Task Scheduler.
+## 1.0.65
+- Restored More as a destination in the bottom navigation.
+- Added a directional slide and fade transition when swiping between department top performers.
+- Centered the icon in the in-app update dialog.
+- Added a centered success confirmation when returning from sharing a schedule.
+
