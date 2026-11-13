@@ -61,6 +61,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -118,11 +119,13 @@ class AppStore(context: android.content.Context) {
     val users = mutableStateOf<List<ManagedUser>>(emptyList())
     val loading = mutableStateOf(false)
     val error = mutableStateOf<String?>(null)
+    val online = mutableStateOf(false)
+    val lastSyncedAt = mutableStateOf(preferences.getString("last_successful_sync", null))
     val page = mutableStateOf("Home")
     val month = mutableStateOf(YearMonth.now())
+    val dataMonth = mutableStateOf<YearMonth?>(null)
     val dark = mutableStateOf(preferences.getBoolean("dark_appearance", false))
     val fontScale = mutableFloatStateOf(preferences.getFloat("font_scale", 1f))
-    val offline = mutableStateOf(true)
     val avatar = mutableStateOf<ImageBitmap?>(null)
     val accountPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
     val personPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
@@ -221,7 +224,14 @@ class AppStore(context: android.content.Context) {
         error.value = null
         try {
             if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
-            else { cloudConfig.value = api.loadWorkspaceConfig(); data.value = api.loadSchedule(month.value, cloudConfig.value) }
+            else {
+                cloudConfig.value = api.loadWorkspaceConfig()
+                data.value = api.loadSchedule(month.value, cloudConfig.value)
+                val syncedAt = java.time.Instant.now().toString()
+                lastSyncedAt.value = syncedAt
+                preferences.edit().putString("last_successful_sync", syncedAt).apply()
+            }
+            dataMonth.value = month.value
             if (month.value == YearMonth.now()) {
                 if (canOpenPage("Schedule Calendar")) ScheduleWidgets.update(appContext, data.value)
                 else ScheduleWidgets.clear(appContext)
@@ -232,6 +242,8 @@ class AppStore(context: android.content.Context) {
         catch (e: Exception) { error.value = e.message ?: "Could not load the schedule."; throw e }
         finally { if (ownsLoadingState) loading.value = false }
     }
+    fun setNetworkAvailable(value: Boolean) { online.value = value }
+    fun consumeLocalRecoveryNotice(): String? = local.consumeRecoveryNotice()
     suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null, originalStatus: String? = null) {
         val reason = if (status == "cancelled") "cancelled" else status
         val savedStatus = if (status == "cancelled") "excused" else status
@@ -258,9 +270,14 @@ class AppStore(context: android.content.Context) {
         allTaskReviews.value = loaded
         return loaded
     }
-    suspend fun changeMonth(next: YearMonth) { month.value = next; load() }
+    suspend fun changeMonth(next: YearMonth) {
+        if (next == month.value) return
+        month.value = next
+        dataMonth.value = null
+        load()
+    }
     suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month, cloudConfig.value ?: api.loadWorkspaceConfig())
-    suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) local.saveAssignment(meeting, slot, person) else api.assign(meeting, slot, person); load() }
+    suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) local.saveAssignment(meeting, slot, person) else api.assign(meeting, slot, person); month.value = YearMonth.from(LocalDate.parse(meeting.date)); load() }
     suspend fun savePerson(person: Person) {
         loading.value = true
         try { if (localMode) local.savePerson(person) else if (person.id.isBlank()) api.createPerson(person) else api.updatePerson(person); load() }
@@ -455,8 +472,31 @@ fun SchedulerApp(appLock: AppLockController) {
         lifecycleOwner?.lifecycle?.addObserver(observer)
         onDispose { lifecycleOwner?.lifecycle?.removeObserver(observer) }
     }
+    DisposableEffect(context) {
+        val manager = context.getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val mainHandler = android.os.Handler(context.mainLooper)
+        fun publish(network: android.net.Network?) {
+            val validated = network?.let(manager::getNetworkCapabilities)?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+            mainHandler.post { store.setNetworkAvailable(validated) }
+        }
+        val callback = object : android.net.ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: android.net.Network) = publish(network)
+            override fun onCapabilitiesChanged(network: android.net.Network, capabilities: android.net.NetworkCapabilities) {
+                mainHandler.post { store.setNetworkAvailable(capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)) }
+            }
+            override fun onLost(network: android.net.Network) { publish(manager.activeNetwork) }
+        }
+        publish(manager.activeNetwork)
+        runCatching { manager.registerDefaultNetworkCallback(callback) }
+        onDispose { runCatching { manager.unregisterNetworkCallback(callback) } }
+    }
     LaunchedEffect(Unit) {
-        try { store.initialize() } finally { delay(450); showSplash = false; store.checkAppUpdate() }
+        try { store.initialize() } finally {
+            delay(450)
+            showSplash = false
+            store.checkAppUpdate()
+            store.consumeLocalRecoveryNotice()?.let { snackbar.showSnackbar(it, duration = SnackbarDuration.Long) }
+        }
     }
     LaunchedEffect(store.data.value?.people?.map { it.id to it.avatarUpdatedAt }) {
         store.data.value?.people.orEmpty().filter { it.avatarUpdatedAt != null }.forEach { person ->
@@ -502,25 +542,33 @@ fun SchedulerApp(appLock: AppLockController) {
                     snackbarHost = { SnackbarHost(snackbar) }
                 ) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding)) {
+                      if (!store.localMode && !store.online.value) OfflineStatusBanner(store.lastSyncedAt.value)
                       Box(Modifier.weight(1f).fillMaxWidth()) {
-                        if (!store.canOpenPage(page)) {
-                            LaunchedEffect(page, signedIn.permissions) { store.page.value = "Home" }
-                        } else when (page) {
-                            "Home" -> HomeScreen(store, onGo = { if(store.canOpenPage(it)) store.page.value = it else scope.launch { snackbar.showSnackbar("This page is not available for your account.") } }, onOpenCalendar = openCalendar)
-                            "Schedule Calendar" -> ScheduleCalendarScreen(store)
-                            "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
-                            "People Directory" -> PeopleScreen(store)
-                            "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
-                            "Task Review" -> if (store.canOpenPage("Task Review")) TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
-                            "Top Performers" -> TopPerformersScreen(store)
-                            "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
-                            "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
-                                if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
-                                else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
-                                    scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
-                                }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
-                            })
-                            else -> HomeScreen(store, onGo = { if(store.canOpenPage(it)) store.page.value = it else scope.launch { snackbar.showSnackbar("This page is not available for your account.") } }, onOpenCalendar = openCalendar)
+                        AnimatedContent(
+                            targetState = page,
+                            modifier = Modifier.fillMaxSize(),
+                            transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
+                            label = "app page transition"
+                        ) { targetPage ->
+                            if (!store.canOpenPage(targetPage)) {
+                                LaunchedEffect(targetPage, signedIn.permissions) { store.page.value = "Home" }
+                            } else when (targetPage) {
+                                "Home" -> HomeScreen(store, onGo = { if(store.canOpenPage(it)) store.page.value = it else scope.launch { snackbar.showSnackbar("This page is not available for your account.") } }, onOpenCalendar = openCalendar)
+                                "Schedule Calendar" -> ScheduleCalendarScreen(store)
+                                "Schedule", "Manage Schedule" -> ScheduleScreen(store, onAssign = { meeting, slot -> assignmentTarget = meeting to slot })
+                                "People Directory" -> PeopleScreen(store)
+                                "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
+                                "Task Review" -> if (store.canOpenPage("Task Review")) TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
+                                "Top Performers" -> TopPerformersScreen(store)
+                                "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
+                                "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
+                                    if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
+                                    else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
+                                        scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
+                                    }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
+                                })
+                                else -> HomeScreen(store, onGo = { if(store.canOpenPage(it)) store.page.value = it else scope.launch { snackbar.showSnackbar("This page is not available for your account.") } }, onOpenCalendar = openCalendar)
+                            }
                         }
                         if (loading) LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter), color = MaterialTheme.colorScheme.primary)
                       }
@@ -589,7 +637,25 @@ fun SchedulerApp(appLock: AppLockController) {
                 .mapNotNull { it.personId }
                 .toSet()
             val candidates = store.data.value?.people.orEmpty().filter { personEligible(it, meeting, slot) && it.id !in occupiedOnDate }
-            AssignmentPickerDialog(meeting, slot, candidates, onDismiss={assignmentTarget=null}, onSelect={person -> scope.launch { try { store.assign(meeting,slot,person); assignmentTarget=null } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not assign person") } } })
+            AssignmentPickerDialog(meeting, slot, candidates, onDismiss={assignmentTarget=null}, onSelect={person -> scope.launch {
+                val previousSlot = store.data.value?.meetings?.firstOrNull { it.date == meeting.date && it.type == meeting.type }
+                    ?.slots?.firstOrNull { it.department == slot.department && it.key == slot.key }
+                val previousId = previousSlot?.personId
+                val previousPerson = previousId?.let { id -> store.data.value?.people?.firstOrNull { it.id == id } }
+                val canUndo = previousId != person?.id && (previousId == null || previousPerson != null)
+                try {
+                    store.assign(meeting,slot,person)
+                    assignmentTarget=null
+                    if (canUndo) {
+                        val result = snackbar.showSnackbar("Assignment saved.", actionLabel = "Undo", withDismissAction = true)
+                        if (result == SnackbarResult.ActionPerformed) {
+                            runCatching { store.assign(meeting, slot, previousPerson) }
+                                .onSuccess { snackbar.showSnackbar("Assignment restored.") }
+                                .onFailure { snackbar.showSnackbar(it.message ?: "Could not restore assignment.") }
+                        }
+                    } else snackbar.showSnackbar("Assignment saved.")
+                } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not assign person") }
+            } })
         }
         if (createAccountDialog && !appLock.locked) AccountCreateDialog(onDismiss = { createAccountDialog = false }, onCreate = { username, displayName, password, confirm, role, departments, actions -> store.createUser(username, displayName, password, confirm, role, departments, actions); snackbar.showSnackbar("Account created.") })
         confirmDelete?.takeIf { !appLock.locked }?.let { account -> AlertDialog(
@@ -681,6 +747,7 @@ private fun PreviewNavigationItem(label:String,icon:String,selected:Boolean,modi
     var tapMotion by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
     Column(
         modifier.clip(RoundedCornerShape(14.dp))
+            .semantics { stateDescription = if (selected) "Selected" else "Not selected" }
             .clickable {
                 tapMotion?.cancel()
                 tapMotion=scope.launch {
@@ -997,7 +1064,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
 
 @Composable
 private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: (LocalDate?) -> Unit) {
-    val data = store.data.value
+    val data = store.data.value.takeIf { store.dataMonth.value == store.month.value }
     val scope = rememberCoroutineScope()
     val today = LocalDate.now().toString()
     val next = data?.meetings?.firstOrNull { it.date >= today }
@@ -1016,10 +1083,35 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE · MMMM d")).uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.2.sp)
         Text("$greeting, ${store.user.value?.displayName ?: ""}", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 4.dp))
         Text("Here’s your congregation at a glance.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
+        SyncStatusRow(store)
         Spacer(Modifier.height(18.dp))
         if (store.canOpenPage("Schedule Calendar")) { if (next != null) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(19.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenCalendar(null) }) {
             Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingTitle(next)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
         } else EmptyCard("No upcoming meetings found.") }
+        val shortcuts = when (store.user.value?.role) {
+            "admin" -> listOf("Manage Schedule" to "calendar-check", "Task Review" to "clipboard-check", "Export Studio" to "file-down")
+            "assistant" -> listOf("Manage Schedule" to "calendar-check", "Task Review" to "clipboard-check", "Schedule Calendar" to "calendar-days")
+            else -> listOf("Schedule Calendar" to "calendar-days", "People Directory" to "users-round", "Reports" to "chart")
+        }.filter { store.canOpenPage(it.first) }
+        if (shortcuts.isNotEmpty()) {
+            Text("Quick actions", fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 18.dp, bottom = 8.dp))
+            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                shortcuts.forEach { (destination, icon) ->
+                    Surface(
+                        onClick = { onGo(destination) },
+                        modifier = Modifier.widthIn(min = 96.dp).heightIn(min = 72.dp).semantics { contentDescription = "Open $destination"; role = Role.Button },
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                    ) {
+                        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Icon(MaterialSymbol(icon), null, Modifier.size(21.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text(destination, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+                        }
+                    }
+                }
+            }
+        }
         val reviewable = data?.meetings.orEmpty().filter { it.date < today }.flatMap { meeting ->
             meeting.slots.filter { it.personId != null }.filter { slot -> store.taskReviews.value.none { it.date == meeting.date && it.type == meeting.type && it.department == slot.department && it.slotKey == slot.key.removePrefix("dept:") } }
         }.size
@@ -1117,11 +1209,11 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
                 }.sortedWith(compareByDescending<Triple<Person, Int, Int>> { it.second }.thenByDescending { it.third })
                 Column(Modifier.fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(MaterialSymbol("chevron-left"), null, Modifier.size(16.dp), tint = if (departmentIndex > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                        IconButton(onClick = { if (departmentIndex > 0) { swipeDirection = -1; department = options[departmentIndex - 1].first } }, enabled = departmentIndex > 0, modifier = Modifier.size(48.dp).semantics { contentDescription = "Previous department" }) { Icon(MaterialSymbol("chevron-left"), null, Modifier.size(20.dp)) }
                         Text(label, Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                        Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = if (departmentIndex < options.lastIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)
+                        IconButton(onClick = { if (departmentIndex < options.lastIndex) { swipeDirection = 1; department = options[departmentIndex + 1].first } }, enabled = departmentIndex < options.lastIndex, modifier = Modifier.size(48.dp).semantics { contentDescription = "Next department" }) { Icon(MaterialSymbol("chevron-right"), null, Modifier.size(20.dp)) }
                     }
-                    Text("Swipe to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("Swipe or use arrows to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     val top = ranking.firstOrNull()
                     if (loadingOverall) {
                         Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
@@ -1196,7 +1288,8 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
 @Composable
 private fun ScheduleCalendarScreen(store: AppStore) {
     val month = store.month.value
-    val meetings = store.data.value?.meetings.orEmpty().filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
+    val schedule = store.data.value.takeIf { store.dataMonth.value == month }
+    val meetings = schedule?.meetings.orEmpty().filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) == month }.getOrDefault(false) }
     val meetingsByDate = remember(meetings) { meetings.groupBy { LocalDate.parse(it.date) } }
     var selectedDate by remember(month) {
         mutableStateOf(store.calendarRequestedDate.value?.takeIf { YearMonth.from(it) == month }
@@ -1223,6 +1316,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
         }
     }
 
+    LaunchedEffect(month) { if (store.dataMonth.value != month) runCatching { store.load() } }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Column(Modifier.padding(top = 12.dp, bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth().padding(top = 3.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1351,7 +1445,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
 
 @Composable
 private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
-    val data = store.data.value
+    val data = store.data.value.takeIf { store.dataMonth.value == store.month.value }
     var filter by remember { mutableStateOf("All Departments") }
     var openOnly by remember { mutableStateOf(false) }
     val month = store.month.value
@@ -1377,7 +1471,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
     val rows = meetingsThisWeek.filter { meeting -> !openOnly || meeting.slots.any { !it.isAssigned() } }
     val firstMeetingKey = rows.firstOrNull()?.let { it.date + it.type }
     val expandedKeys = expandedMeetings
-    LaunchedEffect(month) { if (store.data.value == null) try { store.load() } catch (_: Exception) { } }
+    LaunchedEffect(month) { if (store.dataMonth.value != month) try { store.load() } catch (_: Exception) { } }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -1527,7 +1621,9 @@ private fun PeopleScreen(store: AppStore) {
     val scope = rememberCoroutineScope()
     val historyReviews = store.allTaskReviews.value ?: store.taskReviews.value
     LaunchedEffect(Unit) { runCatching { store.loadAllTaskReviews() } }
-    val people = store.data.value?.people.orEmpty()
+    val currentData = store.data.value.takeIf { store.dataMonth.value == store.month.value }
+    val people = currentData?.people.orEmpty()
+    LaunchedEffect(store.month.value) { if (store.dataMonth.value != store.month.value) runCatching { store.load() } }
     val admin = store.user.value?.role == "admin"
     var query by remember { mutableStateOf("") }; var filter by remember { mutableStateOf("All Status") }
     var editorOpen by remember { mutableStateOf(false) }; var editingPerson by remember { mutableStateOf<Person?>(null) }
@@ -1546,8 +1642,8 @@ private fun PeopleScreen(store: AppStore) {
         OutlinedTextField(query, { query = it }, placeholder = { Text("Search people") }, leadingIcon = { Icon(MaterialSymbol("search"), null) }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true, shape = RoundedCornerShape(13.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All Status", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         when {
-            store.data.value == null && store.loading.value -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading directory", "Getting personnel and group information.") }
-            store.data.value == null -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Directory unavailable", store.error.value ?: "Check your connection and try again.", isError = true, actionLabel = "Try again", onAction = { scope.launch { runCatching { store.load() } } }) }
+            currentData == null && store.loading.value -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading directory", "Getting personnel and group information.") }
+            currentData == null -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Directory unavailable", store.error.value ?: "Check your connection and try again.", isError = true, actionLabel = "Try again", onAction = { scope.launch { runCatching { store.load() } } }) }
             shown.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel(if (people.isEmpty()) "groups" else "search", if (people.isEmpty()) "No personnel yet" else "No matching people", if (people.isEmpty()) "Add congregation members to make them available for scheduling." else "Try another name or status filter.", actionLabel = if (query.isNotBlank() || filter != "All Status") "Clear filters" else null, onAction = { query = ""; filter = "All Status" }) }
             else -> LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
                 items(shown, key = { it.id }) { person ->
@@ -1893,7 +1989,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             Text("Review task", fontSize = 19.sp, fontWeight = FontWeight.Bold)
                             Text("Select the task outcome", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        IconButton(onClick = { selected = null }, modifier = Modifier.size(36.dp)) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { selected = null }, modifier = Modifier.size(48.dp)) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                     Surface(Modifier.fillMaxWidth().padding(top = 17.dp, bottom = 17.dp), shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                         Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2250,9 +2346,9 @@ private fun ExportMonthPickerDialog(month: YearMonth, onDismiss: () -> Unit, onS
             Column(Modifier.padding(18.dp)) {
                 Text("Choose month", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
                 Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                    IconButton(onClick = { year-- }, modifier = Modifier.size(38.dp)) { Icon(MaterialSymbol("chevron-left"), "Previous year", tint = MaterialTheme.colorScheme.primary) }
+                    IconButton(onClick = { year-- }, modifier = Modifier.size(48.dp)) { Icon(MaterialSymbol("chevron-left"), "Previous year", tint = MaterialTheme.colorScheme.primary) }
                     Text(year.toString(), fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    IconButton(onClick = { year++ }, modifier = Modifier.size(38.dp)) { Icon(MaterialSymbol("chevron-right"), "Next year", tint = MaterialTheme.colorScheme.primary) }
+                    IconButton(onClick = { year++ }, modifier = Modifier.size(48.dp)) { Icon(MaterialSymbol("chevron-right"), "Next year", tint = MaterialTheme.colorScheme.primary) }
                 }
                 months.chunked(3).forEach { rowMonths ->
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
@@ -2467,7 +2563,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             var pageAccessAccount by remember { mutableStateOf<ManagedUser?>(null) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.CenterVertically) {
                 Text("Manage Accounts", fontSize=14.sp, fontWeight=FontWeight.SemiBold)
-                FilledTonalIconButton(onClick=onAddAccount,modifier=Modifier.size(42.dp)) { Icon(MaterialSymbol("user-plus"),"Add account",Modifier.size(22.dp),MaterialTheme.colorScheme.primary) }
+                FilledTonalIconButton(onClick=onAddAccount,modifier=Modifier.size(48.dp)) { Icon(MaterialSymbol("user-plus"),"Add account",Modifier.size(22.dp),MaterialTheme.colorScheme.primary) }
             }
             if (store.users.value.isEmpty()) Text("No accounts found.",color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp)
             val accounts=store.users.value
@@ -2578,9 +2674,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
             }
             Text("Adjusts text throughout the app.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
-            PreferenceRow(icon = "wifi-off", title = "Offline schedule access", subtitle = if (store.offline.value) "Available without a connection" else "Use the latest online schedule") {
-                Switch(checked = store.offline.value, onCheckedChange = { store.offline.value = it }, colors = appSwitchColors())
-            }
+            PreferenceRow(icon = if (store.localMode || store.online.value) "cloud-done" else "cloud-off", title = if (store.localMode) "Local workspace" else "Workspace connection", subtitle = if (store.localMode) "Schedules are stored on this device." else if (store.online.value) "Internet connection is available; workspace updates sync when loaded." else "Offline · last successful sync ${syncTimeLabel(store.lastSyncedAt.value) ?: "not recorded"}.") { Text(if (store.localMode) "LOCAL" else if (store.online.value) "ONLINE" else "OFFLINE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (!store.localMode && !store.online.value) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) }
             Card(Modifier.fillMaxWidth().padding(top = 10.dp), shape = RoundedCornerShape(13.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
                     Text("APP INFORMATION", fontSize = 9.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -3103,11 +3197,52 @@ private fun RowCard(icon:String,title:String,subtitle:String,trailing:String?=nu
 @Composable
 private fun SectionTitle(title:String,action:String,onAction:()->Unit){Row(Modifier.fillMaxWidth().padding(top=SchedulerSpacing.xLarge,bottom=SchedulerSpacing.small),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurface);TextButton(onClick=onAction,contentPadding=PaddingValues(horizontal=SchedulerSpacing.small,vertical=6.dp)){Text(action,fontSize=13.sp,color=MaterialTheme.colorScheme.primary)}}}
 @Composable
-private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=CircleShape,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerLow,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=40.dp)){Box(Modifier.padding(horizontal=14.dp,vertical=9.dp),contentAlignment=Alignment.Center){Text(label,fontSize=12.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
+private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=CircleShape,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerLow,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=48.dp)){Box(Modifier.padding(horizontal=14.dp,vertical=9.dp),contentAlignment=Alignment.Center){Text(label,fontSize=12.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
 @Composable
 private fun Avatar(name:String,size:androidx.compose.ui.unit.Dp=36.dp,photo:ImageBitmap?=null){Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){if(photo!=null) Image(photo,contentDescription="Profile photo",modifier=Modifier.fillMaxSize().clip(CircleShape)) else Text(name.firstOrNull()?.uppercase()?:"?",fontSize=12.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold)}}
 @Composable
 private fun EmptyCard(text:String){Card(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Text(text,Modifier.padding(SchedulerSpacing.xLarge),fontSize=13.sp,lineHeight=19.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
+
+private fun syncTimeLabel(value: String?): String? = value?.let { raw ->
+    runCatching { java.time.Instant.parse(raw).atZone(java.time.ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("MMM d · h:mm a")) }.getOrNull()
+}
+
+@Composable
+private fun SyncStatusRow(store: AppStore) {
+    val subtitle = when {
+        store.localMode -> "Changes are saved on this device"
+        store.loading.value -> "Syncing your congregation workspace"
+        !store.online.value -> if (store.data.value != null) "Offline · showing the last loaded schedule" else "Offline · connect to load the schedule"
+        store.error.value != null -> "Sync needs attention · last updated ${syncTimeLabel(store.lastSyncedAt.value) ?: "not yet"}"
+        syncTimeLabel(store.lastSyncedAt.value) != null -> "Last synced ${syncTimeLabel(store.lastSyncedAt.value)}"
+        else -> "Connected · ready to sync"
+    }
+    val icon = when {
+        store.localMode -> "database"
+        store.loading.value -> "sync"
+        !store.online.value || store.error.value != null -> "cloud-off"
+        else -> "cloud-done"
+    }
+    val tint = if (!store.localMode && (!store.online.value || store.error.value != null)) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    Row(Modifier.padding(top = 9.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        if (store.loading.value && !store.localMode) CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 2.dp, color = tint)
+        else Icon(MaterialSymbol(icon), null, Modifier.size(15.dp), tint = tint)
+        Text(subtitle, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun OfflineStatusBanner(lastSyncedAt: String?) {
+    Surface(color = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            Icon(MaterialSymbol("cloud-off"), null, Modifier.size(18.dp))
+            Column {
+                Text("Offline · changes cannot sync right now", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                Text(if (lastSyncedAt == null) "Connect to load the latest workspace." else "Last successful sync: ${syncTimeLabel(lastSyncedAt) ?: "unknown"}", fontSize = 10.sp)
+            }
+        }
+    }
+}
 
 @Composable
 private fun LoadingStatePanel(title: String, description: String, modifier: Modifier = Modifier) {
@@ -3270,6 +3405,9 @@ private fun twoToneVector(name: String): ImageVector = when (name) {
     "add" -> Icons.TwoTone.Add
     "database" -> Icons.TwoTone.Storage
     "cloud" -> Icons.TwoTone.Cloud
+    "cloud_done" -> Icons.TwoTone.CloudDone
+    "cloud_off" -> Icons.TwoTone.CloudOff
+    "sync" -> Icons.TwoTone.Sync
     "upload" -> Icons.TwoTone.Upload
     "tune", "settings", "settings-2", "sliders-horizontal" -> Icons.TwoTone.Tune
     "apartment", "building", "building-2" -> Icons.TwoTone.Apartment
