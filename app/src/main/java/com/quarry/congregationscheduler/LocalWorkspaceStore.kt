@@ -22,12 +22,22 @@ class LocalWorkspaceStore(context: Context) {
     private val appContext = context.applicationContext
     private val resolver = appContext.contentResolver
     private val file = java.io.File(appContext.filesDir, "local-workspace.json")
+    private val atomicFile = android.util.AtomicFile(file)
     private val backupPreferences = appContext.getSharedPreferences("local_auto_backup", Context.MODE_PRIVATE)
+    private var recoveryNotice: String? = null
     private var root = readRoot()
 
-    @Synchronized private fun readRoot(): JSONObject = runCatching {
-        if (file.exists()) JSONObject(file.readText()) else JSONObject()
-    }.getOrDefault(JSONObject()).apply {
+    @Synchronized private fun readRoot(): JSONObject {
+        val interruptedWrite = java.io.File(file.path + ".bak").exists() || java.io.File(file.path + ".new").exists()
+        val root = runCatching {
+            if (file.exists() || interruptedWrite) atomicFile.openRead().bufferedReader(Charsets.UTF_8).use { JSONObject(it.readText()) }
+            else JSONObject()
+        }.getOrElse {
+            recoveryNotice = "Local workspace data could not be read. Restore a valid .bcdv backup from Settings."
+            JSONObject()
+        }
+        if (interruptedWrite && recoveryNotice == null) recoveryNotice = "Recovered your workspace after an interrupted save."
+        return root.apply {
         if (!has("people")) put("people", JSONArray())
         if (!has("settings")) put("settings", JSONObject().put("name", "My Congregation").put("thursday", "18:00").put("saturday", "15:30").put("sunday", "07:45"))
         if (!has("months")) put("months", JSONObject())
@@ -44,12 +54,21 @@ class LocalWorkspaceStore(context: Context) {
                 put("localConfig",configJson(defaultConfig(settings)))
             }
         }
+        }
     }
 
     data class AutoBackupInfo(val enabled:Boolean, val folderName:String?, val lastSaved:String?, val error:String?)
 
     @Synchronized private fun save() {
-        file.writeText(root.toString())
+        val stream = atomicFile.startWrite()
+        try {
+            stream.write(root.toString().toByteArray(Charsets.UTF_8))
+            stream.fd.sync()
+            atomicFile.finishWrite(stream)
+        } catch (error: Exception) {
+            atomicFile.failWrite(stream)
+            throw error
+        }
         if (backupPreferences.getBoolean("enabled", false)) {
             runCatching { writeAutomaticBackup() }
                 .onSuccess { backupPreferences.edit().putString("last_saved", Instant.now().toString()).remove("last_error").apply() }
@@ -136,13 +155,24 @@ class LocalWorkspaceStore(context: Context) {
 
     @Synchronized fun import(json: String) {
         val candidate = JSONObject(json)
-        require(candidate.has("people") && candidate.has("settings") && candidate.has("months")) { "This file is not a JW Task Scheduler backup." }
+        val people = candidate.optJSONArray("people") ?: error("This file is not a valid JW Task Scheduler backup.")
+        val settings = candidate.optJSONObject("settings") ?: error("The backup is missing workspace settings.")
+        val months = candidate.optJSONObject("months") ?: error("The backup is missing schedule history.")
+        val reviews = candidate.optJSONArray("reviews") ?: JSONArray()
+        require(settings.optString("name").isNotBlank()) { "The backup does not contain a workspace name." }
+        val monthKeys = months.keys().asSequence().toList()
+        require(monthKeys.all { it.matches(Regex("\\d{4}-\\d{2}")) && months.optJSONArray(it) != null }) { "The backup contains an invalid schedule month." }
+        for (index in 0 until people.length()) require(people.optJSONObject(index) != null) { "The backup contains an invalid personnel record." }
+        for (index in 0 until reviews.length()) require(reviews.optJSONObject(index) != null) { "The backup contains an invalid task review." }
+        val config = candidate.optJSONObject("localConfig") ?: configJson(defaultConfig(settings))
+        parseConfig(config)
+        candidate.put("reviews", reviews).put("localConfig", config).remove("backupMetadata")
+        val previous = root
         root = candidate
-        root.remove("backupMetadata")
-        if (!root.has("reviews")) root.put("reviews", JSONArray())
-        if (!root.has("localConfig")) root.put("localConfig",configJson(defaultConfig(root.optJSONObject("settings") ?: JSONObject())))
-        save()
+        try { save() } catch (error: Exception) { root = previous; throw error }
     }
+
+    @Synchronized fun consumeRecoveryNotice(): String? = recoveryNotice.also { recoveryNotice = null }
 
     private fun people(): List<Person> {
         val a = root.optJSONArray("people") ?: JSONArray()

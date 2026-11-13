@@ -22,7 +22,7 @@ object SchedulerSpacing {
     val xxLarge = 24.dp
     val cardPadding = 16.dp
     val rowMinimumHeight = 56.dp
-    val controlHeight = 44.dp
+    val controlHeight = 48.dp
     val iconSize = 20.dp
     val avatarSize = 40.dp
 }

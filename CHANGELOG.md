@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.71
+- Animate navigation between pages and add undo after schedule assignment changes.
+- Add role-aware Home shortcuts, accessible department controls, and larger touch targets.
+- Show accurate connection and last-sync status instead of a nonfunctional offline toggle.
+- Prevent stale-month schedule data from appearing after navigation or failed loads.
+- Protect local workspace writes with atomic recovery and validate backups before restore.
+
+
 ## 1.0.70
 - Centralize forest-green light and dark themes, typography defaults, and shared spacing and corner-radius tokens.
 - Refine shared cards, preference rows, filters, and time controls with consistent sizing and clearer text hierarchy.
