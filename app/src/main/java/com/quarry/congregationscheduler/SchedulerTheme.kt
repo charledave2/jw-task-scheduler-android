@@ -8,6 +8,7 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 
@@ -34,7 +35,26 @@ private val SchedulerShapes = Shapes(
     extraLarge = RoundedCornerShape(28.dp)
 )
 
-private val SchedulerTypography = Typography(defaultFontFamily = FontFamily.SansSerif)
+private fun TextStyle.withSchedulerFont() = copy(fontFamily = FontFamily.SansSerif)
+
+private val BaseTypography = Typography()
+private val SchedulerTypography = BaseTypography.copy(
+    displayLarge = BaseTypography.displayLarge.withSchedulerFont(),
+    displayMedium = BaseTypography.displayMedium.withSchedulerFont(),
+    displaySmall = BaseTypography.displaySmall.withSchedulerFont(),
+    headlineLarge = BaseTypography.headlineLarge.withSchedulerFont(),
+    headlineMedium = BaseTypography.headlineMedium.withSchedulerFont(),
+    headlineSmall = BaseTypography.headlineSmall.withSchedulerFont(),
+    titleLarge = BaseTypography.titleLarge.withSchedulerFont(),
+    titleMedium = BaseTypography.titleMedium.withSchedulerFont(),
+    titleSmall = BaseTypography.titleSmall.withSchedulerFont(),
+    bodyLarge = BaseTypography.bodyLarge.withSchedulerFont(),
+    bodyMedium = BaseTypography.bodyMedium.withSchedulerFont(),
+    bodySmall = BaseTypography.bodySmall.withSchedulerFont(),
+    labelLarge = BaseTypography.labelLarge.withSchedulerFont(),
+    labelMedium = BaseTypography.labelMedium.withSchedulerFont(),
+    labelSmall = BaseTypography.labelSmall.withSchedulerFont()
+)
 
 @Composable
 fun SchedulerTheme(dark: Boolean, content: @Composable () -> Unit) {
