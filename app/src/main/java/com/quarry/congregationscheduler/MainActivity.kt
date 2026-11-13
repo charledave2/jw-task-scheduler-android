@@ -216,6 +216,8 @@ class AppStore(context: android.content.Context) {
         finally { loading.value = false }
     }
     suspend fun load() {
+        val ownsLoadingState = !loading.value
+        if (ownsLoadingState) loading.value = true
         error.value = null
         try {
             if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
@@ -228,6 +230,7 @@ class AppStore(context: android.content.Context) {
             taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
         }
         catch (e: Exception) { error.value = e.message ?: "Could not load the schedule."; throw e }
+        finally { if (ownsLoadingState) loading.value = false }
     }
     suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null, originalStatus: String? = null) {
         val reason = if (status == "cancelled") "cancelled" else status
@@ -462,35 +465,7 @@ fun SchedulerApp(appLock: AppLockController) {
     }
     LaunchedEffect(error) { error?.let { snackbar.showSnackbar(it) } }
 
-    val colors = if (store.dark.value) darkColorScheme(
-        primary = Color(0xFFA9C6A8), onPrimary = Color(0xFF172318),
-        primaryContainer = Color(0xFF34473A), onPrimaryContainer = Color(0xFFDCE8D7),
-        secondary = Color(0xFFC3D0C0), onSecondary = Color(0xFF253328),
-        background = Color(0xFF151713), surface = Color(0xFF20231E), onSurface = Color(0xFFE8E9E1),
-        surfaceDim = Color(0xFF151713), surfaceBright = Color(0xFF383C35),
-        surfaceContainerLowest = Color(0xFF151713), surfaceContainerLow = Color(0xFF1B1E19),
-        surfaceContainer = Color(0xFF292D27), surfaceContainerHigh = Color(0xFF32372F), surfaceContainerHighest = Color(0xFF3B4038),
-        onSurfaceVariant = Color(0xFFB9BDB2), outline = Color(0xFF7A8276), outlineVariant = Color(0xFF3B4038),
-        secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
-        tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
-        tertiaryContainer = Color(0xFF384437), onTertiaryContainer = Color(0xFFDDE8D4),
-        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8),
-        inverseSurface = Color(0xFFE8E9E1), inverseOnSurface = Color(0xFF20231E), inversePrimary = Color(0xFF5C745F)
-    ) else lightColorScheme(
-        primary = Color(0xFF5C745F), onPrimary = Color.White, background = Color(0xFFF6F6F3),
-        primaryContainer = Color(0xFFDCE8D8), onPrimaryContainer = Color(0xFF1D3021),
-        secondary = Color(0xFF627A67), onSecondary = Color.White,
-        surface = Color.White, onSurface = Color(0xFF252721),
-        surfaceDim = Color(0xFFDADDD7), surfaceBright = Color.White,
-        surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F9F5),
-        surfaceContainer = Color(0xFFF0F2ED), surfaceContainerHigh = Color(0xFFE9ECE6), surfaceContainerHighest = Color(0xFFE1E5DE),
-        outline = Color(0xFF73796F), outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
-        onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
-        tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
-        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F),
-        inverseSurface = Color(0xFF303B30), inverseOnSurface = Color(0xFFF6F6F3), inversePrimary = Color(0xFFA9C6A8)
-    )
-    MaterialTheme(colorScheme = colors) {
+    SchedulerTheme(dark = store.dark.value) {
       val baseDensity = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * store.fontScale.value)) {
         SideEffect {
@@ -621,7 +596,7 @@ fun SchedulerApp(appLock: AppLockController) {
             onDismissRequest = { confirmDelete = null },
             title = { Text("Delete account?") },
             text = { Text("Permanently delete ${account.displayName}'s account? This cannot be undone.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = null; scope.launch { try { store.deleteUser(account) } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not delete account") } } }) { Text("Delete", color=Color(0xFFB45148)) } },
+            confirmButton = { TextButton(onClick = { confirmDelete = null; scope.launch { try { store.deleteUser(account) } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not delete account") } } }) { Text("Delete", color=MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         ) }
       }
@@ -993,7 +968,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
                 Text("Welcome back", fontWeight = FontWeight.Bold, fontSize = 23.sp); Text("Sign in to your workspace", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 20.dp))
                 OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                 Spacer(Modifier.height(12.dp)); PasswordField(password, { password = it }, "Password", modifier=Modifier.fillMaxWidth(), shape=RoundedCornerShape(13.dp))
-                if (!error.isNullOrBlank()) Text(error, color = Color(0xFFB45148), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+                if (!error.isNullOrBlank()) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) {
                     if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
@@ -1023,6 +998,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
 @Composable
 private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: (LocalDate?) -> Unit) {
     val data = store.data.value
+    val scope = rememberCoroutineScope()
     val today = LocalDate.now().toString()
     val next = data?.meetings?.firstOrNull { it.date >= today }
     val total = data?.meetings?.sumOf { it.slots.size } ?: 0
@@ -1031,7 +1007,12 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         while (true) { delay(60_000); value = timeGreeting() }
     }
     var selectedDepartment by remember { mutableStateOf<Pair<String, List<Person>>?>(null) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
+    if (data == null) {
+        Box(Modifier.fillMaxSize().padding(22.dp), contentAlignment = Alignment.Center) {
+            if (store.loading.value) LoadingStatePanel("Loading your workspace", "Getting the latest schedule and congregation data.")
+            else StatePanel("cloud-off", "Your schedule isn’t available", store.error.value ?: "Check your connection and try loading the workspace again.", isError = store.error.value != null, actionLabel = "Try again", onAction = { scope.launch { runCatching { store.load() } } })
+        }
+    } else Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 12.dp)) {
         Text(LocalDate.now().format(DateTimeFormatter.ofPattern("EEEE · MMMM d")).uppercase(), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.2.sp)
         Text("$greeting, ${store.user.value?.displayName ?: ""}", fontSize = 25.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 4.dp))
         Text("Here’s your congregation at a glance.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp, modifier = Modifier.padding(top = 4.dp))
@@ -1468,8 +1449,11 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
             }
         }
         val canEdit: (String) -> Boolean = { department -> canEditSlot(store.user.value, department) }
-        if (rows.isEmpty() && !store.loading.value) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text(if (openOnly) "No open assignments this week." else "No meetings in this week.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
-        else LazyColumn(state = listState, contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        when {
+            data == null && store.loading.value -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading schedule", "Fetching meetings for the selected month.") }
+            data == null -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Couldn’t load the schedule", store.error.value ?: "Check your connection and try again.", isError = true, actionLabel = "Try again", onAction = { scope.launch { runCatching { store.load() } } }) }
+            rows.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel(if (openOnly) "task-alt" else "calendar-days", if (openOnly) "All assignments are filled" else "No meetings this week", if (openOnly) "There are no unassigned positions in the selected week." else "Choose another week or month to see scheduled meetings.") }
+            else -> LazyColumn(state = listState, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(rows, key = { it.date + it.type }) { meeting ->
                 val key = meeting.date + meeting.type
                 WeeklyMeetingCard(meeting, expanded = key in expandedKeys, openOnly = openOnly, canEdit = canEdit,
@@ -1478,6 +1462,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                         expandedMeetings = if (key in current) current - key else current + key
                     }, onAssign = onAssign)
             }
+        }
         }
     }
     if (monthPickerOpen) ExportMonthPickerDialog(month, onDismiss = { monthPickerOpen = false }, onSelect = { next ->
@@ -1539,6 +1524,7 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
 
 @Composable
 private fun PeopleScreen(store: AppStore) {
+    val scope = rememberCoroutineScope()
     val historyReviews = store.allTaskReviews.value ?: store.taskReviews.value
     LaunchedEffect(Unit) { runCatching { store.loadAllTaskReviews() } }
     val people = store.data.value?.people.orEmpty()
@@ -1559,10 +1545,15 @@ private fun PeopleScreen(store: AppStore) {
         Text("${people.size} personnel · ${workspaceGroupSummary(store.workspaceConfig?.groupCount)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
         OutlinedTextField(query, { query = it }, placeholder = { Text("Search people") }, leadingIcon = { Icon(MaterialSymbol("search"), null) }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true, shape = RoundedCornerShape(13.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All Status", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
-            items(shown, key = { it.id }) { person ->
-                RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(store.workspaceConfig), photoName = person.name, photo = store.personPhotos.value[person.id]) {
-                    if (admin) { editingPerson = person; editorOpen = true }
+        when {
+            store.data.value == null && store.loading.value -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading directory", "Getting personnel and group information.") }
+            store.data.value == null -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Directory unavailable", store.error.value ?: "Check your connection and try again.", isError = true, actionLabel = "Try again", onAction = { scope.launch { runCatching { store.load() } } }) }
+            shown.isEmpty() -> Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel(if (people.isEmpty()) "groups" else "search", if (people.isEmpty()) "No personnel yet" else "No matching people", if (people.isEmpty()) "Add congregation members to make them available for scheduling." else "Try another name or status filter.", actionLabel = if (query.isNotBlank() || filter != "All Status") "Clear filters" else null, onAction = { query = ""; filter = "All Status" }) }
+            else -> LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 18.dp)) {
+                items(shown, key = { it.id }) { person ->
+                    RowCard("user-round", person.name, "Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}${if (person.noThursday) " · Thursday exempt" else ""}", person.eligibleSummary(store.workspaceConfig), photoName = person.name, photo = store.personPhotos.value[person.id]) {
+                        if (admin) { editingPerson = person; editorOpen = true }
+                    }
                 }
             }
         }
@@ -1839,21 +1830,11 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
             }
             Text("Review assignments for this week. Excused tasks are excluded from performance totals.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 9.dp))
         }
-        if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        else if (loadError) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Could not load this week. Check your connection and try again.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
-        else if (meetings.isEmpty()) {
-            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
-                Text("No meetings to review yet", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
-                Text("Assigned tasks will appear here on or after the meeting day.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-            }
-        }
+        if (loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading weekly review", "Checking assigned tasks and review status.") }
+        else if (loadError) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Couldn’t load this week", "Check your connection, then retry the weekly review.", isError = true, actionLabel = "Try again", onAction = { refresh++ }) }
+        else if (meetings.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("calendar-days", "No meetings to review yet", "Assigned tasks appear here on or after the meeting day.") }
         else if (meetings.none { meeting -> meeting.slots.any { it.personId != null && statusBySlot["${meeting.date}|${meeting.type}|${it.department}|${it.key.removePrefix("dept:")}"] == null } }) {
-            Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Icon(MaterialSymbol("task-alt"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(42.dp))
-                Text("No Weekly Task to Review", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 10.dp))
-                Text("All assigned tasks for this week have been reviewed.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp))
-            }
+            Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("task-alt", "No weekly tasks to review", "All assigned tasks for this week have been reviewed.") }
         }
         else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             items(meetings, key = { "${it.date}|${it.type}" }) { meeting ->
@@ -1933,7 +1914,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                     )
                     options.forEach { (status, title, description) ->
                         val selectedStatus = if (status == "cancelled") existingReview?.displayStatus() == "Cancelled" else currentStatus == status
-                        val accent = when (status) { "completed" -> Color(0xFF4E8B62); "not_completed" -> Color(0xFFB75C55); else -> MaterialTheme.colorScheme.onSurfaceVariant }
+                        val accent = when (status) { "completed" -> MaterialTheme.colorScheme.primary; "not_completed" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurfaceVariant }
                         Surface(
                             onClick = {
                                 if (status == "excused" || status == "cancelled") {
@@ -2048,9 +2029,9 @@ private fun TopPerformersScreen(store: AppStore) {
             }
             Text("Overall completed assignments rank personnel. Tap a name for recent task details; counts include older reviews and exclude excused tasks.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
         }
-        if (loading) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-        else if (loadError != null) Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) { Text(loadError!!, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp); TextButton(onClick = { refresh++ }) { Text("Retry") } }
-        else if (grouped.isEmpty()) Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("No reviewed tasks yet.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp) }
+        if (loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading performance", "Calculating completed assignments.") }
+        else if (loadError != null) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Performance isn’t available", loadError!!, isError = true, actionLabel = "Try again", onAction = { refresh++ }) }
+        else if (grouped.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("trophy", "No reviewed tasks yet", "Performance rankings will appear after tasks have been reviewed.") }
         else LazyColumn(contentPadding = PaddingValues(horizontal = 16.dp, vertical = 5.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
             items(grouped, key = { it.person.id }) { indexed ->
                 val person = indexed.person
@@ -3080,26 +3061,26 @@ private fun TimeInput(value: String, onChange: (String)->Unit) {
     val minute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0,59) ?: 0
     OutlinedButton(
         onClick = { TimePickerDialog(context, { _, h, m -> onChange("%02d:%02d".format(h,m)) }, hour, minute, false).show() },
-        modifier = Modifier.width(132.dp).height(40.dp),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.width(132.dp).height(SchedulerSpacing.controlHeight),
+        shape = MaterialTheme.shapes.small,
         contentPadding = PaddingValues(horizontal=10.dp, vertical=6.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.onSurface)
     ) {
         Icon(MaterialSymbol("clock-3"), null, Modifier.size(15.dp), tint=MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(8.dp))
-        Text(prettyTime(value), fontSize=12.sp, fontWeight=FontWeight.SemiBold)
+        Text(prettyTime(value), fontSize=13.sp, fontWeight=FontWeight.SemiBold)
     }
 }
 @Composable
 private fun PreferenceRow(icon: String, title: String, subtitle: String, trailing: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
-            Icon(MaterialSymbol(icon), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
+    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = SchedulerSpacing.rowMinimumHeight).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(SchedulerSpacing.avatarSize).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(MaterialSymbol(icon), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(SchedulerSpacing.iconSize))
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(8.dp))
         trailing()
@@ -3116,17 +3097,41 @@ private fun appSwitchColors() = SwitchDefaults.colors(
     uncheckedBorderColor = MaterialTheme.colorScheme.outlineVariant
 )
 @Composable
-private fun MetricCard(value:String,label:String,modifier:Modifier=Modifier){Card(modifier,shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)){Column(Modifier.padding(12.dp)){Text(value,fontSize=21.sp,fontWeight=FontWeight.Bold);Text(label,fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}}
+private fun MetricCard(value:String,label:String,modifier:Modifier=Modifier){Card(modifier,shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.7f))){Column(Modifier.padding(SchedulerSpacing.cardPadding)){Text(value,fontSize=22.sp,fontWeight=FontWeight.Bold);Text(label,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=3.dp))}}}
 @Composable
-private fun RowCard(icon:String,title:String,subtitle:String,trailing:String?=null,photoName:String?=null,photo:ImageBitmap?=null,onClick:()->Unit){Card(Modifier.fillMaxWidth().padding(bottom=8.dp).clickable { onClick() },shape=RoundedCornerShape(15.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically){if(photoName!=null) Avatar(photoName,36.dp,photo) else Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))};Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=12.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=10.sp,modifier=Modifier.padding(top=3.dp),maxLines=1,overflow=TextOverflow.Ellipsis)};if(trailing!=null)Text(trailing,fontSize=10.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.primary)}}}
+private fun RowCard(icon:String,title:String,subtitle:String,trailing:String?=null,photoName:String?=null,photo:ImageBitmap?=null,onClick:()->Unit){Card(onClick=onClick,modifier=Modifier.fillMaxWidth().padding(bottom=SchedulerSpacing.small),shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Row(Modifier.padding(SchedulerSpacing.medium),verticalAlignment=Alignment.CenterVertically){if(photoName!=null) Avatar(photoName,SchedulerSpacing.avatarSize,photo) else Box(Modifier.size(SchedulerSpacing.avatarSize).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(SchedulerSpacing.iconSize))};Spacer(Modifier.width(SchedulerSpacing.medium));Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=14.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp,modifier=Modifier.padding(top=3.dp),maxLines=2,overflow=TextOverflow.Ellipsis)};if(trailing!=null)Text(trailing,fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.primary)}}}
 @Composable
-private fun SectionTitle(title:String,action:String,onAction:()->Unit){Row(Modifier.fillMaxWidth().padding(top=20.dp,bottom=9.dp),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f),fontSize=15.sp,fontWeight=FontWeight.Bold);TextButton(onClick=onAction,contentPadding=PaddingValues(4.dp)){Text(action,fontSize=11.sp,color=MaterialTheme.colorScheme.primary)}}}
+private fun SectionTitle(title:String,action:String,onAction:()->Unit){Row(Modifier.fillMaxWidth().padding(top=SchedulerSpacing.xLarge,bottom=SchedulerSpacing.small),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurface);TextButton(onClick=onAction,contentPadding=PaddingValues(horizontal=SchedulerSpacing.small,vertical=6.dp)){Text(action,fontSize=13.sp,color=MaterialTheme.colorScheme.primary)}}}
 @Composable
-private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=RoundedCornerShape(50),color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=32.dp)){Box(Modifier.padding(horizontal=11.dp,vertical=7.dp),contentAlignment=Alignment.Center){Text(label,fontSize=10.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
+private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=CircleShape,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerLow,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=40.dp)){Box(Modifier.padding(horizontal=14.dp,vertical=9.dp),contentAlignment=Alignment.Center){Text(label,fontSize=12.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
 @Composable
 private fun Avatar(name:String,size:androidx.compose.ui.unit.Dp=36.dp,photo:ImageBitmap?=null){Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){if(photo!=null) Image(photo,contentDescription="Profile photo",modifier=Modifier.fillMaxSize().clip(CircleShape)) else Text(name.firstOrNull()?.uppercase()?:"?",fontSize=12.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold)}}
 @Composable
-private fun EmptyCard(text:String){Card(Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)){Text(text,Modifier.padding(17.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
+private fun EmptyCard(text:String){Card(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Text(text,Modifier.padding(SchedulerSpacing.xLarge),fontSize=13.sp,lineHeight=19.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
+
+@Composable
+private fun LoadingStatePanel(title: String, description: String, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        CircularProgressIndicator(modifier = Modifier.size(30.dp), strokeWidth = 3.dp, color = MaterialTheme.colorScheme.primary)
+        Text(title, fontSize = 15.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 14.dp))
+        Text(description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+@Composable
+private fun StatePanel(icon: String, title: String, description: String, modifier: Modifier = Modifier, isError: Boolean = false, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
+    val iconColor = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Box(Modifier.size(58.dp).clip(CircleShape).background(if (isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(MaterialSymbol(icon), null, modifier = Modifier.size(28.dp), tint = if (isError) MaterialTheme.colorScheme.onErrorContainer else iconColor)
+        }
+        Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 13.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        Text(description, fontSize = 12.sp, lineHeight = 18.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 5.dp).fillMaxWidth(.88f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        if (actionLabel != null && onAction != null) {
+            FilledTonalButton(onClick = onAction, modifier = Modifier.padding(top = 13.dp), shape = MaterialTheme.shapes.medium) { Text(actionLabel) }
+        }
+    }
+}
 
 private fun roleLabel(role:String)=when(role){"admin"->"Administrator";"assistant"->"Department Editor";else->"Viewer"}
 private fun canEditSlot(user: UserInfo?, department: String): Boolean {

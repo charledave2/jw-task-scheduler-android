@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.70
+- Centralize forest-green light and dark themes, typography defaults, and shared spacing and corner-radius tokens.
+- Refine shared cards, preference rows, filters, and time controls with consistent sizing and clearer text hierarchy.
+- Use theme status colors for errors and task review states.
+- Add consistent loading, empty, and recoverable error states with retry actions across core screens.
+- Keep schedule refresh failures visible and provide clear guidance when directories or reviews have no results.
+
 ## 1.0.69
 - Fill the compact widget's square resize area with a scrollable assignment list.
 - Show every assigned non-backup personnel slot in the wide widget, with scrolling when the list is longer than the widget.
