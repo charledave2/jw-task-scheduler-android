@@ -462,35 +462,7 @@ fun SchedulerApp(appLock: AppLockController) {
     }
     LaunchedEffect(error) { error?.let { snackbar.showSnackbar(it) } }
 
-    val colors = if (store.dark.value) darkColorScheme(
-        primary = Color(0xFFA9C6A8), onPrimary = Color(0xFF172318),
-        primaryContainer = Color(0xFF34473A), onPrimaryContainer = Color(0xFFDCE8D7),
-        secondary = Color(0xFFC3D0C0), onSecondary = Color(0xFF253328),
-        background = Color(0xFF151713), surface = Color(0xFF20231E), onSurface = Color(0xFFE8E9E1),
-        surfaceDim = Color(0xFF151713), surfaceBright = Color(0xFF383C35),
-        surfaceContainerLowest = Color(0xFF151713), surfaceContainerLow = Color(0xFF1B1E19),
-        surfaceContainer = Color(0xFF292D27), surfaceContainerHigh = Color(0xFF32372F), surfaceContainerHighest = Color(0xFF3B4038),
-        onSurfaceVariant = Color(0xFFB9BDB2), outline = Color(0xFF7A8276), outlineVariant = Color(0xFF3B4038),
-        secondaryContainer = Color(0xFF343F34), onSecondaryContainer = Color(0xFFDCE8D7),
-        tertiary = Color(0xFFC6D2B8), onTertiary = Color(0xFF263126),
-        tertiaryContainer = Color(0xFF384437), onTertiaryContainer = Color(0xFFDDE8D4),
-        surfaceVariant = Color(0xFF292D27), surfaceTint = Color(0xFFA9C6A8),
-        inverseSurface = Color(0xFFE8E9E1), inverseOnSurface = Color(0xFF20231E), inversePrimary = Color(0xFF5C745F)
-    ) else lightColorScheme(
-        primary = Color(0xFF5C745F), onPrimary = Color.White, background = Color(0xFFF6F6F3),
-        primaryContainer = Color(0xFFDCE8D8), onPrimaryContainer = Color(0xFF1D3021),
-        secondary = Color(0xFF627A67), onSecondary = Color.White,
-        surface = Color.White, onSurface = Color(0xFF252721),
-        surfaceDim = Color(0xFFDADDD7), surfaceBright = Color.White,
-        surfaceContainerLowest = Color.White, surfaceContainerLow = Color(0xFFF8F9F5),
-        surfaceContainer = Color(0xFFF0F2ED), surfaceContainerHigh = Color(0xFFE9ECE6), surfaceContainerHighest = Color(0xFFE1E5DE),
-        outline = Color(0xFF73796F), outlineVariant = Color(0xFFE5E6DF), secondaryContainer = Color(0xFFEDF2EB),
-        onSecondaryContainer = Color(0xFF253328), tertiary = Color(0xFF77835D), onTertiary = Color.White,
-        tertiaryContainer = Color(0xFFE6EACF), onTertiaryContainer = Color(0xFF30391D),
-        surfaceVariant = Color(0xFFF0F2ED), onSurfaceVariant = Color(0xFF686D64), surfaceTint = Color(0xFF5C745F),
-        inverseSurface = Color(0xFF303B30), inverseOnSurface = Color(0xFFF6F6F3), inversePrimary = Color(0xFFA9C6A8)
-    )
-    MaterialTheme(colorScheme = colors) {
+    SchedulerTheme(dark = store.dark.value) {
       val baseDensity = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * store.fontScale.value)) {
         SideEffect {
@@ -621,7 +593,7 @@ fun SchedulerApp(appLock: AppLockController) {
             onDismissRequest = { confirmDelete = null },
             title = { Text("Delete account?") },
             text = { Text("Permanently delete ${account.displayName}'s account? This cannot be undone.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = null; scope.launch { try { store.deleteUser(account) } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not delete account") } } }) { Text("Delete", color=Color(0xFFB45148)) } },
+            confirmButton = { TextButton(onClick = { confirmDelete = null; scope.launch { try { store.deleteUser(account) } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not delete account") } } }) { Text("Delete", color=MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
         ) }
       }
@@ -993,7 +965,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
                 Text("Welcome back", fontWeight = FontWeight.Bold, fontSize = 23.sp); Text("Sign in to your workspace", color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 20.dp))
                 OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                 Spacer(Modifier.height(12.dp)); PasswordField(password, { password = it }, "Password", modifier=Modifier.fillMaxWidth(), shape=RoundedCornerShape(13.dp))
-                if (!error.isNullOrBlank()) Text(error, color = Color(0xFFB45148), fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
+                if (!error.isNullOrBlank()) Text(error, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.padding(top = 10.dp))
                 Spacer(Modifier.height(18.dp))
                 Button(onClick = { onLogin(username, password) }, enabled = username.isNotBlank() && password.isNotBlank() && !loading, modifier = Modifier.fillMaxWidth().height(50.dp), shape = RoundedCornerShape(13.dp)) {
                     if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
@@ -1933,7 +1905,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                     )
                     options.forEach { (status, title, description) ->
                         val selectedStatus = if (status == "cancelled") existingReview?.displayStatus() == "Cancelled" else currentStatus == status
-                        val accent = when (status) { "completed" -> Color(0xFF4E8B62); "not_completed" -> Color(0xFFB75C55); else -> MaterialTheme.colorScheme.onSurfaceVariant }
+                        val accent = when (status) { "completed" -> MaterialTheme.colorScheme.primary; "not_completed" -> MaterialTheme.colorScheme.error; else -> MaterialTheme.colorScheme.onSurfaceVariant }
                         Surface(
                             onClick = {
                                 if (status == "excused" || status == "cancelled") {
@@ -3080,26 +3052,26 @@ private fun TimeInput(value: String, onChange: (String)->Unit) {
     val minute = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0,59) ?: 0
     OutlinedButton(
         onClick = { TimePickerDialog(context, { _, h, m -> onChange("%02d:%02d".format(h,m)) }, hour, minute, false).show() },
-        modifier = Modifier.width(132.dp).height(40.dp),
-        shape = RoundedCornerShape(12.dp),
+        modifier = Modifier.width(132.dp).height(SchedulerSpacing.controlHeight),
+        shape = MaterialTheme.shapes.small,
         contentPadding = PaddingValues(horizontal=10.dp, vertical=6.dp),
         colors = ButtonDefaults.outlinedButtonColors(contentColor=MaterialTheme.colorScheme.onSurface)
     ) {
         Icon(MaterialSymbol("clock-3"), null, Modifier.size(15.dp), tint=MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(8.dp))
-        Text(prettyTime(value), fontSize=12.sp, fontWeight=FontWeight.SemiBold)
+        Text(prettyTime(value), fontSize=13.sp, fontWeight=FontWeight.SemiBold)
     }
 }
 @Composable
 private fun PreferenceRow(icon: String, title: String, subtitle: String, trailing: @Composable () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
-            Icon(MaterialSymbol(icon), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
+    Row(Modifier.fillMaxWidth().defaultMinSize(minHeight = SchedulerSpacing.rowMinimumHeight).padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(SchedulerSpacing.avatarSize).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
+            Icon(MaterialSymbol(icon), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(SchedulerSpacing.iconSize))
         }
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(8.dp))
         trailing()
@@ -3116,17 +3088,17 @@ private fun appSwitchColors() = SwitchDefaults.colors(
     uncheckedBorderColor = MaterialTheme.colorScheme.outlineVariant
 )
 @Composable
-private fun MetricCard(value:String,label:String,modifier:Modifier=Modifier){Card(modifier,shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)){Column(Modifier.padding(12.dp)){Text(value,fontSize=21.sp,fontWeight=FontWeight.Bold);Text(label,fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}}
+private fun MetricCard(value:String,label:String,modifier:Modifier=Modifier){Card(modifier,shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.7f))){Column(Modifier.padding(SchedulerSpacing.cardPadding)){Text(value,fontSize=22.sp,fontWeight=FontWeight.Bold);Text(label,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=3.dp))}}}
 @Composable
-private fun RowCard(icon:String,title:String,subtitle:String,trailing:String?=null,photoName:String?=null,photo:ImageBitmap?=null,onClick:()->Unit){Card(Modifier.fillMaxWidth().padding(bottom=8.dp).clickable { onClick() },shape=RoundedCornerShape(15.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Row(Modifier.padding(12.dp),verticalAlignment=Alignment.CenterVertically){if(photoName!=null) Avatar(photoName,36.dp,photo) else Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))};Spacer(Modifier.width(10.dp));Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=12.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=10.sp,modifier=Modifier.padding(top=3.dp),maxLines=1,overflow=TextOverflow.Ellipsis)};if(trailing!=null)Text(trailing,fontSize=10.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.primary)}}}
+private fun RowCard(icon:String,title:String,subtitle:String,trailing:String?=null,photoName:String?=null,photo:ImageBitmap?=null,onClick:()->Unit){Card(onClick=onClick,modifier=Modifier.fillMaxWidth().padding(bottom=SchedulerSpacing.small),shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Row(Modifier.padding(SchedulerSpacing.medium),verticalAlignment=Alignment.CenterVertically){if(photoName!=null) Avatar(photoName,SchedulerSpacing.avatarSize,photo) else Box(Modifier.size(SchedulerSpacing.avatarSize).clip(MaterialTheme.shapes.small).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(SchedulerSpacing.iconSize))};Spacer(Modifier.width(SchedulerSpacing.medium));Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=14.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp,modifier=Modifier.padding(top=3.dp),maxLines=2,overflow=TextOverflow.Ellipsis)};if(trailing!=null)Text(trailing,fontSize=12.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.primary)}}}
 @Composable
-private fun SectionTitle(title:String,action:String,onAction:()->Unit){Row(Modifier.fillMaxWidth().padding(top=20.dp,bottom=9.dp),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f),fontSize=15.sp,fontWeight=FontWeight.Bold);TextButton(onClick=onAction,contentPadding=PaddingValues(4.dp)){Text(action,fontSize=11.sp,color=MaterialTheme.colorScheme.primary)}}}
+private fun SectionTitle(title:String,action:String,onAction:()->Unit){Row(Modifier.fillMaxWidth().padding(top=SchedulerSpacing.xLarge,bottom=SchedulerSpacing.small),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f),fontSize=17.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurface);TextButton(onClick=onAction,contentPadding=PaddingValues(horizontal=SchedulerSpacing.small,vertical=6.dp)){Text(action,fontSize=13.sp,color=MaterialTheme.colorScheme.primary)}}}
 @Composable
-private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=RoundedCornerShape(50),color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=32.dp)){Box(Modifier.padding(horizontal=11.dp,vertical=7.dp),contentAlignment=Alignment.Center){Text(label,fontSize=10.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
+private fun FilterPill(label:String,selected:Boolean,onClick:()->Unit){Surface(onClick=onClick,shape=CircleShape,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainerLow,border=if(selected)null else androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.defaultMinSize(minHeight=40.dp)){Box(Modifier.padding(horizontal=14.dp,vertical=9.dp),contentAlignment=Alignment.Center){Text(label,fontSize=12.sp,color=if(selected)MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,fontWeight=if(selected)FontWeight.SemiBold else FontWeight.Normal,maxLines=1)}}}
 @Composable
 private fun Avatar(name:String,size:androidx.compose.ui.unit.Dp=36.dp,photo:ImageBitmap?=null){Box(Modifier.size(size).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){if(photo!=null) Image(photo,contentDescription="Profile photo",modifier=Modifier.fillMaxSize().clip(CircleShape)) else Text(name.firstOrNull()?.uppercase()?:"?",fontSize=12.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold)}}
 @Composable
-private fun EmptyCard(text:String){Card(Modifier.fillMaxWidth(),shape=RoundedCornerShape(16.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)){Text(text,Modifier.padding(17.dp),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
+private fun EmptyCard(text:String){Card(Modifier.fillMaxWidth(),shape=MaterialTheme.shapes.medium,colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceContainerLow),border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)){Text(text,Modifier.padding(SchedulerSpacing.xLarge),fontSize=13.sp,lineHeight=19.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}}
 
 private fun roleLabel(role:String)=when(role){"admin"->"Administrator";"assistant"->"Department Editor";else->"Viewer"}
 private fun canEditSlot(user: UserInfo?, department: String): Boolean {
