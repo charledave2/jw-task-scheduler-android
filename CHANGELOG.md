@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.73
+- Connect the shared workspace to the permanent Production API address so it uses the configured FCM server credential.
+- Keep production updates independent of the old main preview alias.
+
 ## 1.0.72
 - Receive FCM notifications when new shared-workspace tasks are assigned to the personnel linked to your signed-in account.
 - Add administrator personnel linking and per-account test notifications in Settings.
