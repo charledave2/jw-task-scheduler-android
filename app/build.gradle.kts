@@ -18,8 +18,8 @@ android {
         applicationId = "com.quarry.congregationscheduler"
         minSdk = 24
         targetSdk = 35
-        versionCode = 76
-        versionName = "1.0.71"
+        versionCode = 77
+        versionName = "1.0.72"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
