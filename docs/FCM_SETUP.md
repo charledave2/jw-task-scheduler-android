@@ -6,10 +6,10 @@ It is a client configuration, not a server private key. Never add a service-acco
 
 ## Backend prerequisite
 
-Use the accompanying **jw-task-scheduler-fcm-backend-patch.zip**. The backend source supplied for this change was an older snapshot, so it is intentionally delivered as new files plus an integration diff, not a full replacement deployment. Apply and review that diff against the current deployed backend. Do not replace newer workspace, department, or permission code with the snapshot.
+Use the accompanying **jw-task-scheduler-fcm-backend-patch.zip**. The supplied ZIP was an older snapshot; the current workspace code was then recovered from `charledave2/congregation-scheduler/cloud-workspace-patch/web-source`. The patch includes integration with `/api/workspace/assignments` and the `cloud_assignments` table, plus new notification endpoints and an additive migration. Review it against production before deployment. Do not replace newer workspace, department, or permission code with the snapshot.
 
-1. Apply the additive `0010_fcm_notifications.sql` migration (rename the numeric prefix if already used).
-2. Install the new notification endpoints and helper; merge the assignment-save integration into every current assignment-writing route.
+1. Apply the additive `0011_fcm_notifications.sql` migration (rename the numeric prefix if already used).
+2. Install the new notification endpoints and helper and the updated current `/api/workspace/assignments` handler. Custom departments, role labels and meeting rules remain supported.
 3. In Firebase project settings → Service accounts, generate a service-account key for `jw-task-scheduler`. Enable Firebase Cloud Messaging HTTP v1 API if needed.
 4. In the Cloudflare Pages production environment add an **encrypted secret** named `FCM_SERVICE_ACCOUNT_JSON` containing the full service-account JSON. Add the same secret in preview only if preview notifications are intended. Redeploy. Do not commit this value.
 5. Sign in as admin, open Settings & Accounts → Accounts & Access → account → Link personnel. Select the correct personnel by ID; matching names are not used.
@@ -33,4 +33,4 @@ Use the accompanying **jw-task-scheduler-fcm-backend-patch.zip**. The backend so
 
 ## Validation
 
-PR build compiles debug and release Kotlin and validates the release Firebase configuration. Existing unit/emulator checks remain enabled. Backend regression tests cover recipients, unchanged saves, backup tasks, account changes, disabled/unlinked users, failures/retries, unregistered tokens, authorization and HTTP v1 OAuth signing.
+PR build compiles debug and release Kotlin and validates the release Firebase configuration. Existing unit/emulator checks remain enabled. Eighteen backend regression tests cover recipients, unchanged saves, backup tasks, account changes, disabled/unlinked users, failures/retries, unregistered tokens, authorization and HTTP v1 OAuth signing.
