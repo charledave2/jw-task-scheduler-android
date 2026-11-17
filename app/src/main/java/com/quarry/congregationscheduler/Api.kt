@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -25,6 +26,9 @@ class TokenStore(context: Context) {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
     }
+    fun getUserId() = prefs.getString("user_id", null)
+    fun saveUserId(id: String) = prefs.edit().putString("user_id", id).apply()
+    fun clearUserId() = prefs.edit().remove("user_id").apply()
     fun getAccess() = prefs.getString("access", null)
     fun getRefresh() = prefs.getString("refresh", null)
     fun save(access: String, refresh: String) = prefs.edit().putString("access", access).putString("refresh", refresh).apply()
@@ -63,16 +67,27 @@ fun TaskReview.belongsToPersonHistory(personId: String): Boolean = if (status ==
 fun TaskReview.displayStatusFor(personId: String): String = if (status == "completed" && this.personId == personId && substitutePersonId() != null) when(initialPersonStatus()) { "cancelled" -> "Cancelled"; "excused" -> "Excused"; "not_completed" -> "Not completed"; else -> "Completed" } else displayStatus()
 
 class ApiClient(context: Context) {
+    private val appContext = context.applicationContext
     private val tokens = TokenStore(context)
     fun hasSession(): Boolean = !tokens.getAccess().isNullOrBlank() || !tokens.getRefresh().isNullOrBlank()
 
     suspend fun login(username: String, password: String): UserInfo = withContext(Dispatchers.IO) {
         val data = raw("api/auth/mobile-login", "POST", JSONObject().put("username", username).put("password", password), null)
         tokens.save(data.getString("access_token"), data.getString("refresh_token"))
-        parseUser(data.getJSONObject("user"))
+        parseUser(data.getJSONObject("user")).also { tokens.saveUserId(it.id) }
     }
 
-    suspend fun logout() = withContext(Dispatchers.IO) { tokens.clear() }
+    suspend fun logout() = withContext(Dispatchers.IO) {
+        val previousAccess = tokens.getAccess()
+        tokens.clear() // Suppress in-flight notifications immediately, including offline logout.
+        TaskPush.cancel(appContext)
+        TaskPush.clearNotifications(appContext)
+        // Best effort with the OLD account token. Never delay local sign-out on the network,
+        // and never let a delayed deletion unregister the next signed-in account.
+        if (previousAccess != null) kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
+            runCatching { raw("api/notifications", "DELETE", JSONObject().put("installation_id", TaskPush.installationId(appContext)), previousAccess) }
+        }
+    }
 
     private fun raw(path: String, method: String, body: JSONObject?, bearer: String?): JSONObject {
         val connection = URL(API_BASE + path).openConnection() as HttpURLConnection
@@ -114,7 +129,23 @@ class ApiClient(context: Context) {
         }
     }
 
-    suspend fun getMe(): UserInfo = withContext(Dispatchers.IO) { parseUser(request("api/auth/me").getJSONObject("user")) }
+    suspend fun getMe(): UserInfo = withContext(Dispatchers.IO) { parseUser(request("api/auth/me").getJSONObject("user")).also { tokens.saveUserId(it.id) } }
+
+    suspend fun registerPushDevice(installation: String, token: String, accountId: String) = withContext(Dispatchers.IO) {
+        request("api/notifications", "PUT", JSONObject().put("installation_id", installation).put("token", token).put("account_id", accountId))
+    }
+    suspend fun unregisterPushDevice(installation: String) = withContext(Dispatchers.IO) {
+        request("api/notifications", "DELETE", JSONObject().put("installation_id", installation))
+    }
+    suspend fun pushStatus(): JSONObject = withContext(Dispatchers.IO) { request("api/notifications") }
+    suspend fun testPush(userId: String? = null): Int = withContext(Dispatchers.IO) {
+        request("api/notifications", "POST", JSONObject().apply { userId?.let { put("user_id", it) } }).getInt("sent")
+    }
+    suspend fun retryPush(): JSONObject = withContext(Dispatchers.IO) { request("api/notifications", "POST", JSONObject().put("action", "retry")) }
+    suspend fun personnelLinks(): JSONObject = withContext(Dispatchers.IO) { request("api/personnel-links") }
+    suspend fun linkPersonnel(userId: String, personId: String?) = withContext(Dispatchers.IO) {
+        request("api/personnel-links", "PUT", JSONObject().put("user_id", userId.toInt()).put("person_id", personId?.toInt() ?: JSONObject.NULL))
+    }
 
     suspend fun loadWorkspaceConfig(): LocalWorkspaceConfig = withContext(Dispatchers.IO) {
         parseWorkspaceConfig(request("api/workspace/config").getJSONObject("config"))

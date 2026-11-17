@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "192093467006",
+    "project_id": "jw-task-scheduler",
+    "storage_bucket": "jw-task-scheduler.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:192093467006:android:a48af9d84d8d9be71a432f",
+        "android_client_info": {
+          "package_name": "com.quarry.congregationscheduler"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAHcWClB-xu6lLkzMLAzH_t1UYCElZdilA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

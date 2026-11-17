@@ -94,14 +94,21 @@ import java.time.format.DateTimeFormatter
 
 
 class MainActivity : AppCompatActivity() {
+    internal val taskNotification = mutableStateOf<TaskNotificationTarget?>(null)
     private lateinit var appLock: AppLockController
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        taskNotification.value = TaskPush.target(intent)
         appLock = AppLockController(this)
         window.statusBarColor = android.graphics.Color.rgb(246, 246, 243)
         window.navigationBarColor = android.graphics.Color.rgb(246, 246, 243)
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
         setContent { AppSecurityShell(appLock) }
+    }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        taskNotification.value = TaskPush.target(intent)
     }
     override fun onStop() { appLock.onBackground(); super.onStop() }
     override fun onDestroy() { appLock.dispose(); super.onDestroy() }
@@ -174,6 +181,13 @@ class AppStore(context: android.content.Context) {
             if (e is ApiException && e.code == 401) signOut()
         }
     }
+    fun syncPush() { if (!localMode && user.value != null) TaskPush.schedule(appContext) }
+    suspend fun notificationStatus() = api.pushStatus()
+    suspend fun testNotification(userId: String? = null) = api.testPush(userId)
+    suspend fun retryNotifications() = api.retryPush()
+    suspend fun personnelLinks() = api.personnelLinks()
+    suspend fun linkPersonnel(userId: String, personId: String?) = api.linkPersonnel(userId, personId)
+
     fun canOpenPage(page: String): Boolean = localMode || accountCanOpenPage(user.value, page)
     suspend fun downloadAndInstallUpdate(context: android.content.Context) {
         val update = availableUpdate.value ?: return
@@ -205,6 +219,7 @@ class AppStore(context: android.content.Context) {
             user.value = api.getMe()
             mode.value = "shared"
             preferences.edit().putString("workspace_mode", "shared").apply()
+            syncPush()
             refreshAvatar()
             load()
         } catch (e: Exception) {
@@ -214,7 +229,7 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun login(username: String, password: String) {
         loading.value = true; error.value = null
-        try { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply(); user.value = api.login(username.trim(), password); refreshAvatar(); load(); page.value = "Home" }
+        try { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply(); user.value = api.login(username.trim(), password); syncPush(); refreshAvatar(); load(); page.value = "Home" }
         catch (e: Exception) { error.value = e.message ?: "Could not sign in."; user.value = null }
         finally { loading.value = false }
     }
@@ -466,7 +481,7 @@ fun SchedulerApp(appLock: AppLockController) {
                     pendingScheduleShare = false
                     showScheduleShareSuccess = true
                 }
-                scope.launch { store.refreshPageAccess() }
+                scope.launch { store.refreshPageAccess(); store.syncPush() }
             }
         }
         lifecycleOwner?.lifecycle?.addObserver(observer)
@@ -496,6 +511,33 @@ fun SchedulerApp(appLock: AppLockController) {
             showSplash = false
             store.checkAppUpdate()
             store.consumeLocalRecoveryNotice()?.let { snackbar.showSnackbar(it, duration = SnackbarDuration.Long) }
+        }
+    }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { store.syncPush() }
+    LaunchedEffect(store.user.value?.id, showSplash, appLock.locked) {
+        if (showSplash || appLock.locked || store.localMode || store.user.value == null || !BuildConfig.FCM_ENABLED) return@LaunchedEffect
+        val pushPreferences = context.getSharedPreferences("task_push", android.content.Context.MODE_PRIVATE)
+        if (android.os.Build.VERSION.SDK_INT >= 33 && !TaskPush.allowed(context) && !pushPreferences.getBoolean("permission_requested", false)) {
+            pushPreferences.edit().putBoolean("permission_requested", true).apply()
+            notificationPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else store.syncPush()
+    }
+    val notificationActivity = context as? MainActivity
+    val taskTarget = notificationActivity?.taskNotification?.value
+    LaunchedEffect(taskTarget, store.user.value?.id, showSplash, appLock.locked) {
+        val target = taskTarget ?: return@LaunchedEffect
+        if (showSplash || appLock.locked || store.user.value == null) return@LaunchedEffect
+        notificationActivity?.taskNotification?.value = null
+        if (store.localMode || store.user.value?.id != target.accountId) return@LaunchedEffect
+        if (target.date != null && store.canOpenPage("Schedule Calendar")) {
+            store.month.value = YearMonth.from(target.date)
+            store.load()
+            store.calendarRequestedDate.value = target.date
+            store.calendarShouldOpenDate.value = true
+            store.page.value = "Schedule Calendar"
+        } else {
+            store.page.value = "Home"
+            if (target.date != null) snackbar.showSnackbar("Your account does not have access to Schedule Calendar.")
         }
     }
     LaunchedEffect(store.data.value?.people?.map { it.id to it.avatarUpdatedAt }) {
@@ -2520,6 +2562,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
     var sharedSyncInfo by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
         Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
+        if (!store.localMode) TaskNotificationSettings(store, scope, snackbar)
         if (store.user.value?.role != "viewer") SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
             Text(if (store.localMode) "Your schedules, personnel, reviews, and profile photos stay on this device. Save a backup before changing phones." else "This congregation uses a shared online workspace. Sign in on another device to access the same schedule." , fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, lineHeight=18.sp)
             if (store.localMode) {
@@ -2636,6 +2679,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                                     Icon(MaterialSymbol("trash-2"),null,Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Delete account")
                                 }
                             }
+                            PersonnelNotificationActions(store, account, scope, snackbar)
                             TextButton(onClick={selectedAccount=null},modifier=Modifier.align(Alignment.End)){Text("Close")}
                         }
                     }
