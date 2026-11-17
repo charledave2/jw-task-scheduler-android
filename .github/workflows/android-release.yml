@@ -72,15 +72,15 @@ jobs:
       - name: Verify update signing certificate matches the latest release
         env:
           VERSION_NAME: ${{ steps.build.outputs.VERSION_NAME }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           APK_SIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
           RELEASE_JSON=$(mktemp)
-          curl --fail --silent --show-error --location \
-            https://api.github.com/repos/charledave2/jw-task-scheduler-android/releases/latest \
-            --output "$RELEASE_JSON"
-          PREVIOUS_APK=$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].browser_download_url // empty' "$RELEASE_JSON")
-          test -n "$PREVIOUS_APK" || { echo "Could not find the current release APK to compare signing certificates."; exit 1; }
-          curl --fail --silent --show-error --location "$PREVIOUS_APK" --output previous-release.apk
+          gh api "repos/$GITHUB_REPOSITORY/releases/latest" > "$RELEASE_JSON"
+          PREVIOUS_TAG=$(jq -r '.tag_name // empty' "$RELEASE_JSON")
+          PREVIOUS_APK_NAME=$(jq -r '[.assets[] | select(.name | endswith(".apk"))][0].name // empty' "$RELEASE_JSON")
+          test -n "$PREVIOUS_TAG" && test -n "$PREVIOUS_APK_NAME" || { echo "Could not find the current release APK to compare signing certificates."; exit 1; }
+          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$PREVIOUS_APK_NAME" --output previous-release.apk
           CURRENT_APK=app/build/outputs/apk/release/app-release.apk
           PREVIOUS_CERT=$("$APK_SIGNER" verify --print-certs previous-release.apk | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
           CURRENT_CERT=$("$APK_SIGNER" verify --print-certs "$CURRENT_APK" | sed -n 's/.*SHA-256 digest: //p' | head -n 1 | tr -d '[:space:]')
