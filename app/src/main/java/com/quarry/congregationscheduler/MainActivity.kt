@@ -107,7 +107,7 @@ class MainActivity : AppCompatActivity() {
     }
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        setIntent(intent)
+        // Keep the original launch intent and its lifecycle metadata.
         taskNotification.value = TaskPush.target(intent)
     }
     override fun onStop() { appLock.onBackground(); super.onStop() }
