@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.72
+- Receive FCM notifications when new shared-workspace tasks are assigned to the personnel linked to your signed-in account.
+- Add administrator personnel linking and per-account test notifications in Settings.
+- Show task, department, meeting date and time in notifications; tap to open the schedule date while respecting app lock and page access.
+- Register devices after sign-in, refresh tokens, suppress duplicate messages, and stop local notification display after sign-out.
+- Preserve local workspace behavior; cloud notification delivery requires the configured backend.
+
 ## 1.0.71
 - Animate navigation between pages and add undo after schedule assignment changes.
 - Add role-aware Home shortcuts, accessible department controls, and larger touch targets.

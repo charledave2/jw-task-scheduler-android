@@ -1,4 +1,5 @@
 plugins {
+    id("com.google.gms.google-services")
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -17,8 +18,8 @@ android {
         applicationId = "com.quarry.congregationscheduler"
         minSdk = 24
         targetSdk = 35
-        versionCode = 76
-        versionName = "1.0.71"
+        versionCode = 77
+        versionName = "1.0.72"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["appLabel"] = "JW Task Scheduler"
     }
@@ -33,10 +34,12 @@ android {
     buildTypes {
         getByName("debug") {
             applicationIdSuffix = ".test"
+            buildConfigField("boolean", "FCM_ENABLED", "false")
             versionNameSuffix = "-test"
             manifestPlaceholders["appLabel"] = "JW Task Scheduler TEST"
         }
         getByName("release") {
+            buildConfigField("boolean", "FCM_ENABLED", "true")
             signingConfig = signingConfigs.getByName("release")
         }
     }
@@ -53,6 +56,9 @@ android {
 }
 
 dependencies {
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.biometric:biometric:1.1.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
@@ -71,3 +77,7 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
+
+// The supplied Firebase app is registered for the release package only.
+// TEST builds retain their separate package and do not register production devices.
+tasks.matching { it.name.startsWith("process") && it.name.endsWith("GoogleServices") && it.name.contains("Debug") }.configureEach { enabled = false }
