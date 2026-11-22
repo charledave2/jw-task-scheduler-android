@@ -1598,14 +1598,13 @@ private fun PeopleScreen(store: AppStore) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("DIRECTORY", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold)
-                Text("Personnel", style = MaterialTheme.typography.titleMedium)
+                Text("${people.size} personnel", style = MaterialTheme.typography.titleMedium)
+                Text(workspaceGroupSummary(store.workspaceConfig?.groupCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (admin) FilledTonalButton(onClick = { editingPerson = null; editorOpen = true }, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
                 Icon(MaterialSymbol("user-plus"), null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add person", fontSize = 12.sp)
             }
         }
-        Text("${people.size} personnel · ${workspaceGroupSummary(store.workspaceConfig?.groupCount)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 3.dp))
         OutlinedTextField(query, { query = it }, placeholder = { Text("Search people") }, leadingIcon = { Icon(MaterialSymbol("search"), null) }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true, shape = RoundedCornerShape(13.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All Status", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         when {
@@ -1676,7 +1675,7 @@ internal fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Pers
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text("Profile photo", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                                 Text("Shown in department member lists", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     TextButton(onClick = { photoPicker.launch("image/*") }, enabled = !photoBusy) { Text(if (photo == null) "Add photo" else "Change photo", fontSize = 12.sp) }
                                     if (photo != null) TextButton(onClick = { scope.launch { photoBusy = true; try { person?.let { onRemovePhoto(it.id) }; photoError = null } catch (e: Exception) { photoError = e.message ?: "Could not remove photo." } finally { photoBusy = false } } }, enabled = !photoBusy) { Text("Remove", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
                                 }
@@ -2254,7 +2253,7 @@ private fun ExportScreen(store: AppStore) {
                     }
                 }
             }, enabled = poster != null && selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).heightIn(min = 54.dp), shape = RoundedCornerShape(16.dp)) {
-                Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
+                Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }
