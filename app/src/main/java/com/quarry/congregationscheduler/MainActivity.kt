@@ -738,7 +738,7 @@ internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(Str
         Surface(Modifier.widthIn(max = 600.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 3.dp,
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                 navigationDestinations(canOpen).forEach { item ->
                     val selected = navigationSelected(item.page, page, moreOpen)
                     val interaction = remember(item.page) { MutableInteractionSource() }
