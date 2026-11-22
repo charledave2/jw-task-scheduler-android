@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
 package com.quarry.congregationscheduler
 
 import android.graphics.Bitmap
