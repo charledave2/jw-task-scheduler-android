@@ -60,6 +60,4 @@ jobs:
           arch: x86_64
           target: default
           disable-animations: true
-          script: >-
-            gradle --no-daemon :app:connectedDebugAndroidTest
-            ${{ matrix.api == 24 && '-Pandroid.testInstrumentationRunnerArguments.class=com.quarry.congregationscheduler.StartupCompatibilityTest,com.quarry.congregationscheduler.LocalIdentityTest' || '' }}
+          script: ${{ matrix.api == 24 && 'bash .github/scripts/run-minimum-api-tests.sh' || 'gradle --no-daemon :app:connectedDebugAndroidTest' }}
