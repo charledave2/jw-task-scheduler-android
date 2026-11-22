@@ -88,7 +88,7 @@ class UiConsistencyTest {
                 screenshot("dialog-$name")
                 compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
                 if (name == "large-font") {
-                    compose.onAllNodes(hasSetTextAction()).onFirst().performClick()
+                    compose.onAllNodes(hasSetTextAction()).onFirst().performScrollTo().assertIsDisplayed().performClick()
                     compose.waitUntil(10000) { compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().config[SchedulerImeVisibleKey] }
                     screenshot("dialog-$name-keyboard")
                     compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
