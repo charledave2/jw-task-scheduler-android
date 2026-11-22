@@ -117,7 +117,9 @@ class MainActivity : AppCompatActivity() {
 class AppStore(context: android.content.Context) {
     private val appContext = context.applicationContext
     private val api = ApiClient(context)
-    private val local = LocalWorkspaceStore(context)
+    private val local by lazy { LocalWorkspaceStore(appContext) }
+    private suspend fun <T> localIo(block: LocalWorkspaceStore.() -> T): T = withContext(Dispatchers.IO) { local.block() }
+    private val scheduleLoads = ScheduleLoadGate()
     private val preferences = context.getSharedPreferences("scheduler_preferences", android.content.Context.MODE_PRIVATE)
     val user = mutableStateOf<UserInfo?>(null)
     val data = mutableStateOf<ScheduleData?>(null)
@@ -141,7 +143,7 @@ class AppStore(context: android.content.Context) {
     val mode = mutableStateOf(preferences.getString("workspace_mode", null))
     val localConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
     val cloudConfig = mutableStateOf<LocalWorkspaceConfig?>(null)
-    val autoBackup = mutableStateOf(local.autoBackupInfo())
+    val autoBackup = mutableStateOf(LocalWorkspaceStore.AutoBackupInfo(false, null, null, null))
     val availableUpdate = mutableStateOf<AppUpdate?>(null)
     val updateError = mutableStateOf<String?>(null)
     val updateDownloading = mutableStateOf(false)
@@ -149,17 +151,21 @@ class AppStore(context: android.content.Context) {
     val localMode get() = mode.value == "local"
     val workspaceConfig get() = if (localMode) localConfig.value else cloudConfig.value
 
-    fun createLocalWorkspace(name: String) {
+    suspend fun createLocalWorkspace(name: String) {
         mode.value = "local"
         preferences.edit().putString("workspace_mode", "local").putString("local_display_name", "Administrator").apply()
-        local.settings(WorkspaceSettings(name.trim().ifBlank { "My Congregation" }, "18:00", "15:30", "07:45"))
+        localIo { settings(WorkspaceSettings(name.trim().ifBlank { "My Congregation" }, "18:00", "15:30", "07:45")) }
         user.value = UserInfo("local-admin", "local", preferences.getString("local_display_name", "Administrator") ?: "Administrator", "admin", "local")
     }
-    fun exportLocalBackup(): String = local.export()
-    fun importLocalBackup(content: String) = local.import(content)
-    fun configureAutoBackupFolder(uri: Uri): String = local.configureAutoBackupFolder(uri).also { autoBackup.value = local.autoBackupInfo() }
-    fun setAutoBackupEnabled(enabled: Boolean) { local.setAutoBackupEnabled(enabled); autoBackup.value = local.autoBackupInfo() }
-    fun refreshAutoBackupInfo() { autoBackup.value = local.autoBackupInfo() }
+    suspend fun exportLocalBackup(): String = localIo { export() }
+    suspend fun importLocalBackup(content: String) { localIo { import(content) }; allTaskReviews.value = null; personPhotos.value = emptyMap() }
+    suspend fun configureAutoBackupFolder(uri: Uri): String {
+        val folder = localIo { configureAutoBackupFolder(uri) }
+        refreshAutoBackupInfo()
+        return folder
+    }
+    suspend fun setAutoBackupEnabled(enabled: Boolean) { localIo { setAutoBackupEnabled(enabled) }; refreshAutoBackupInfo() }
+    suspend fun refreshAutoBackupInfo() { autoBackup.value = localIo { autoBackupInfo() } }
     private val updatePromptSession = UpdatePromptSession()
     private var knownUpdate: AppUpdate? = null
     fun beginUpdateSession() {
@@ -202,8 +208,8 @@ class AppStore(context: android.content.Context) {
     }
     suspend fun enableSharedWorkspace() { preferences.edit().putString("workspace_mode", "shared").apply(); mode.value = "shared"; load() }
     fun chooseSharedWorkspace() { mode.value = "shared"; preferences.edit().putString("workspace_mode", "shared").apply() }
-    fun returnToWorkspaceSetup() { mode.value = null; preferences.edit().remove("workspace_mode").apply() }
-    fun saveLocalConfig(config:LocalWorkspaceConfig) { local.saveConfig(config); localConfig.value=config; refreshAutoBackupInfo() }
+    fun returnToWorkspaceSetup() { scheduleLoads.invalidate(); mode.value = null; preferences.edit().remove("workspace_mode").apply() }
+    suspend fun saveLocalConfig(config:LocalWorkspaceConfig) { localIo { saveConfig(config) }; localConfig.value=config; refreshAutoBackupInfo() }
     suspend fun saveCloudConfig(config:LocalWorkspaceConfig) { cloudConfig.value=api.saveWorkspaceConfig(config) }
 
     suspend fun initialize() {
@@ -234,31 +240,40 @@ class AppStore(context: android.content.Context) {
         finally { loading.value = false }
     }
     suspend fun load() {
-        val ownsLoadingState = !loading.value
-        if (ownsLoadingState) loading.value = true
+        val requestedMonth = month.value
+        val requestedMode = mode.value
+        val requestedUser = user.value?.id
+        val ticket = scheduleLoads.begin()
+        fun isCurrent() = scheduleLoads.accepts(ticket) && month.value == requestedMonth && mode.value == requestedMode && user.value?.id == requestedUser
+        loading.value = true
         error.value = null
         try {
-            if (localMode) { localConfig.value = local.config(); refreshAutoBackupInfo(); data.value = local.schedule(month.value) }
+            val config = if (requestedMode == "local") localIo { config() } else api.loadWorkspaceConfig()
+            val loaded = if (requestedMode == "local") localIo { schedule(requestedMonth) } else api.loadSchedule(requestedMonth, config)
+            val reviews = if (requestedMode == "local") localIo { reviews(requestedMonth) }
+                else try { api.loadTaskReviews(requestedMonth) } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled } catch (_: Exception) { emptyList() }
+            if (!isCurrent()) return
+            if (requestedMode == "local") { localConfig.value = config; refreshAutoBackupInfo() }
             else {
-                cloudConfig.value = api.loadWorkspaceConfig()
-                data.value = api.loadSchedule(month.value, cloudConfig.value)
+                cloudConfig.value = config
                 val syncedAt = java.time.Instant.now().toString()
                 lastSyncedAt.value = syncedAt
                 preferences.edit().putString("last_successful_sync", syncedAt).apply()
             }
-            dataMonth.value = month.value
-            if (month.value == YearMonth.now()) {
-                if (canOpenPage("Schedule Calendar")) ScheduleWidgets.update(appContext, data.value)
+            if (!isCurrent()) return
+            data.value = loaded
+            dataMonth.value = requestedMonth
+            taskReviews.value = reviews
+            if (requestedMonth == YearMonth.now()) {
+                if (canOpenPage("Schedule Calendar")) ScheduleWidgets.update(appContext, loaded)
                 else ScheduleWidgets.clear(appContext)
             }
-            // Keep schedules usable while the Cloudflare migration/API update is being deployed.
-            taskReviews.value = if (localMode) local.reviews(month.value) else runCatching { api.loadTaskReviews(month.value) }.getOrDefault(emptyList())
-        }
-        catch (e: Exception) { error.value = e.message ?: "Could not load the schedule."; throw e }
-        finally { if (ownsLoadingState) loading.value = false }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) { if (isCurrent()) error.value = e.message ?: "Could not load the schedule."; throw e }
+        finally { if (scheduleLoads.accepts(ticket)) loading.value = false }
     }
     fun setNetworkAvailable(value: Boolean) { online.value = value }
-    fun consumeLocalRecoveryNotice(): String? = local.consumeRecoveryNotice()
+    suspend fun consumeLocalRecoveryNotice(): String? = localIo { consumeRecoveryNotice() }
     suspend fun reviewTask(meeting: Meeting, slot: Slot, status: String, substitute: Person? = null, originalStatus: String? = null) {
         val reason = if (status == "cancelled") "cancelled" else status
         val savedStatus = if (status == "cancelled") "excused" else status
@@ -268,20 +283,20 @@ class AppStore(context: android.content.Context) {
             .put("substitute_person_id", substitute?.id ?: org.json.JSONObject.NULL)
             .put("substitute_person_name", substitute?.name ?: "").toString()
         val review = TaskReview(meeting.date, meeting.type, slot.department, slot.key.removePrefix("dept:"), slot.personId ?: "", slot.name ?: "", savedStatus, note)
-        if (localMode) { local.review(review); refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status, substitute, reason, historyStatus)
+        if (localMode) { localIo { review(review) }; refreshAutoBackupInfo() } else api.saveTaskReview(meeting, slot, status, substitute, reason, historyStatus)
         allTaskReviews.value = null
         val reviewedMonth = YearMonth.from(LocalDate.parse(meeting.date))
-        taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) local.reviews(reviewedMonth) else api.loadTaskReviews(reviewedMonth)
+        taskReviews.value = taskReviews.value.filterNot { runCatching { YearMonth.from(LocalDate.parse(it.date)) == reviewedMonth }.getOrDefault(false) } + if (localMode) localIo { reviews(reviewedMonth) } else api.loadTaskReviews(reviewedMonth)
     }
     suspend fun loadReviewRange(start: LocalDate, end: LocalDate): Pair<List<Meeting>, List<TaskReview>> {
         val months = generateSequence(YearMonth.from(start)) { previous -> if (previous < YearMonth.from(end)) previous.plusMonths(1) else null }.toList()
-        val schedules = months.map { if (localMode) local.schedule(it) else api.loadSchedule(it, cloudConfig.value ?: api.loadWorkspaceConfig()) }
-        val reviews = months.flatMap { if (localMode) local.reviews(it) else api.loadTaskReviews(it) }
+        val schedules = months.map { if (localMode) localIo { schedule(it) } else api.loadSchedule(it, cloudConfig.value ?: api.loadWorkspaceConfig()) }
+        val reviews = months.flatMap { if (localMode) localIo { reviews(it) } else api.loadTaskReviews(it) }
         return schedules.flatMap { it.meetings }.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) } to reviews.filter { runCatching { LocalDate.parse(it.date) in start..end }.getOrDefault(false) }
     }
     suspend fun loadAllTaskReviews(forceRefresh: Boolean = false): List<TaskReview> {
         if (!forceRefresh) allTaskReviews.value?.let { return it }
-        val loaded = if (localMode) local.allReviews() else api.loadTaskReviews(allHistory = true)
+        val loaded = if (localMode) localIo { allReviews() } else api.loadTaskReviews(allHistory = true)
         allTaskReviews.value = loaded
         return loaded
     }
@@ -291,35 +306,35 @@ class AppStore(context: android.content.Context) {
         dataMonth.value = null
         load()
     }
-    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) local.schedule(month) else api.loadSchedule(month, cloudConfig.value ?: api.loadWorkspaceConfig())
-    suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) local.saveAssignment(meeting, slot, person) else api.assign(meeting, slot, person); month.value = YearMonth.from(LocalDate.parse(meeting.date)); load() }
+    suspend fun loadMonthForExport(month: YearMonth): ScheduleData = if (localMode) localIo { schedule(month) } else api.loadSchedule(month, cloudConfig.value ?: api.loadWorkspaceConfig())
+    suspend fun assign(meeting: Meeting, slot: Slot, person: Person?) { if (localMode) localIo { saveAssignment(meeting, slot, person) } else api.assign(meeting, slot, person); month.value = YearMonth.from(LocalDate.parse(meeting.date)); load() }
     suspend fun savePerson(person: Person) {
         loading.value = true
-        try { if (localMode) local.savePerson(person) else if (person.id.isBlank()) api.createPerson(person) else api.updatePerson(person); load() }
+        try { if (localMode) localIo { savePerson(person) } else if (person.id.isBlank()) api.createPerson(person) else api.updatePerson(person); load() }
         finally { loading.value = false }
     }
     suspend fun deletePerson(id: String) {
         loading.value = true
-        try { if (localMode) local.deletePerson(id) else api.deletePerson(id); load() }
+        try { if (localMode) { localIo { deletePerson(id) }; personPhotos.value = personPhotos.value - id } else api.deletePerson(id); load() }
         finally { loading.value = false }
     }
     suspend fun savePersonPhoto(id: String, uri: Uri) {
         val bytes = withContext(Dispatchers.IO) { encodeAvatar(uri) }
-        if (localMode) { local.savePhoto("person:$id", bytes); data.value?.people?.firstOrNull { it.id == id }?.let { local.savePerson(it.copy(avatarUpdatedAt = System.currentTimeMillis().toString())) } }
+        if (localMode) { localIo { savePhoto("person:$id", bytes) }; data.value?.people?.firstOrNull { it.id == id }?.let { localIo { savePerson(it.copy(avatarUpdatedAt = System.currentTimeMillis().toString())) } } }
         else api.uploadPersonAvatar(id, bytes)
         personPhotos.value = personPhotos.value - id
         loadPersonPhoto(id)
         load()
     }
     suspend fun removePersonPhoto(id: String) {
-        if (localMode) local.removePhoto("person:$id") else api.deletePersonAvatar(id)
+        if (localMode) localIo { removePhoto("person:$id") } else api.deletePersonAvatar(id)
         personPhotos.value = personPhotos.value - id
         load()
     }
     suspend fun loadPersonPhoto(id: String) {
         if (personPhotos.value.containsKey(id)) return
         try {
-            val bytes = if (localMode) local.photo("person:$id") else api.downloadPersonAvatar(id)
+            val bytes = if (localMode) localIo { photo("person:$id") } else api.downloadPersonAvatar(id)
             val photo = bytes?.let { withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() } }
             if (photo != null) personPhotos.value = personPhotos.value + (id to photo)
         } catch (_: Exception) { }
@@ -341,20 +356,20 @@ class AppStore(context: android.content.Context) {
     suspend fun setRole(user: ManagedUser, role: String) { api.setUserRole(user, role); loadUsers() }
     suspend fun deleteUser(user: ManagedUser) { api.deleteUser(user); loadUsers() }
     suspend fun saveWorkspace(settings: WorkspaceSettings) {
-        val saved = if (localMode) settings.also(local::settings) else api.saveWorkspace(settings)
+        val saved = if (localMode) settings.also { localIo { settings(it) } } else api.saveWorkspace(settings)
         data.value = data.value?.copy(settings = saved) ?: api.loadSchedule(month.value)
         load()
     }
     suspend fun saveProfile(name: String) { if (localMode) { preferences.edit().putString("local_display_name", name).apply(); user.value = user.value?.copy(displayName = name) } else { val updated = api.saveProfile(name); user.value = user.value?.copy(displayName = updated.displayName) } }
     suspend fun saveAvatar(uri: Uri) {
         val bytes = withContext(Dispatchers.IO) { encodeAvatar(uri) }
-        if (localMode) { local.savePhoto("local-admin", bytes); refreshAvatar() } else api.uploadAvatar(bytes)
+        if (localMode) { localIo { savePhoto("local-admin", bytes) }; refreshAvatar() } else api.uploadAvatar(bytes)
         refreshAvatar()
     }
-    suspend fun removeAvatar() { if (localMode) local.removePhoto("local-admin") else api.deleteAvatar(); avatar.value = null }
+    suspend fun removeAvatar() { if (localMode) localIo { removePhoto("local-admin") } else api.deleteAvatar(); avatar.value = null }
     private suspend fun refreshAvatar() {
         avatar.value = try {
-            val bytes = if (localMode) local.photo("local-admin") else api.downloadAvatar()
+            val bytes = if (localMode) localIo { photo("local-admin") } else api.downloadAvatar()
             bytes?.let { withContext(Dispatchers.IO) { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() } }
         } catch (_: Exception) { null }
     }
@@ -408,7 +423,7 @@ class AppStore(context: android.content.Context) {
         dark.value = enabled
         preferences.edit().putBoolean("dark_appearance", enabled).apply()
     }
-    suspend fun signOut() { ScheduleWidgets.clear(appContext); if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
+    suspend fun signOut() { scheduleLoads.invalidate(); ScheduleWidgets.clear(appContext); if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -431,10 +446,10 @@ fun SchedulerApp(appLock: AppLockController) {
     val snackbar = remember { SnackbarHostState() }
     var showSplash by remember { mutableStateOf(true) }
     val backupWriter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
-        if (uri != null) scope.launch { runCatching { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportLocalBackup()) } ?: error("Could not write backup file.") }.onSuccess { snackbar.showSnackbar("Backup saved.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not save backup.") } }
+        if (uri != null) scope.launch { runCatching { val content = store.exportLocalBackup(); withContext(Dispatchers.IO) { context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(content) } ?: error("Could not write backup file.") } }.onSuccess { snackbar.showSnackbar("Backup saved.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not save backup.") } }
     }
     val backupReader = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch { runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read backup file.") }.onSuccess { content -> runCatching { store.importLocalBackup(content); store.load() }.onSuccess { snackbar.showSnackbar("Backup restored.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not restore backup.") } }.onFailure { snackbar.showSnackbar(it.message ?: "Could not read backup.") } }
+        if (uri != null) scope.launch { runCatching { withContext(Dispatchers.IO) { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("Could not read backup file.") } }.onSuccess { content -> runCatching { store.importLocalBackup(content); store.load() }.onSuccess { snackbar.showSnackbar("Backup restored.") }.onFailure { snackbar.showSnackbar(it.message ?: "Could not restore backup.") } }.onFailure { snackbar.showSnackbar(it.message ?: "Could not read backup.") } }
     }
     val autoBackupFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) scope.launch {
@@ -561,7 +576,7 @@ fun SchedulerApp(appLock: AppLockController) {
         if (showSplash) {
             LoadingSplashScreen()
         } else if (signedIn == null && workspaceMode == null) {
-            WorkspaceModeScreen(onLocal = { name -> store.createLocalWorkspace(name); scope.launch { runCatching { store.load() } } }, onShared = { store.chooseSharedWorkspace() })
+            WorkspaceModeScreen(onLocal = { name -> scope.launch { runCatching { store.createLocalWorkspace(name); store.load() }.onFailure { snackbar.showSnackbar(it.message ?: "Could not create local workspace.") } } }, onShared = { store.chooseSharedWorkspace() })
         } else if (signedIn == null) {
             LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
@@ -2279,7 +2294,15 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
     val period = "${chosenWeek.first.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))} – ${chosenWeek.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
     val posterDepartments = if(store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
         else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
-    val poster = renderSchedulePoster(exportData?.settings?.name ?: "Congregation", selectedMeetings, period, posterDepartments)
+    val congregation = exportData?.settings?.name ?: "Congregation"
+    val poster by produceState<Bitmap?>(null, congregation, selectedMeetings, period, posterDepartments) {
+        value = null
+        try {
+            val rendered = withContext(Dispatchers.Default) { renderSchedulePoster(congregation, selectedMeetings, period, posterDepartments) }
+            value = rendered
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) { loadError = e.message ?: "Could not render schedule image." }
+    }
     val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2317,8 +2340,9 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
                     .clip(RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                Image(
-                    poster.asImageBitmap(),
+                val preview = poster
+                if (preview == null) CircularProgressIndicator() else Image(
+                    preview.asImageBitmap(),
                     contentDescription = "Schedule poster preview",
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2331,9 +2355,10 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
         }
         Surface(tonalElevation = 2.dp, color = MaterialTheme.colorScheme.background) {
             Button(onClick = {
-                if (poster.height > 0) scope.launch {
+                val image = poster
+                if (image != null) scope.launch {
                     try {
-                        val uri = withContext(Dispatchers.IO) { createPosterShareUri(context, poster, selectedWeek) }
+                        val uri = withContext(Dispatchers.IO) { createPosterShareUri(context, image, selectedWeek) }
                         val send = Intent(Intent.ACTION_SEND).apply {
                             type = "image/png"
                             putExtra(Intent.EXTRA_STREAM, uri)
@@ -2346,7 +2371,7 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
                         android.widget.Toast.makeText(context, e.message ?: "Could not prepare schedule image.", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
-            }, enabled = selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(54.dp), shape = RoundedCornerShape(16.dp)) {
+            }, enabled = poster != null && selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(54.dp), shape = RoundedCornerShape(16.dp)) {
                 Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
@@ -2453,10 +2478,14 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
     val cardHeader = 74f
     val slotHeight = 80f
     // Extra bottom breathing room keeps the last personnel name away from the card rule.
-    val cardBodyHeight = 380f
-    val cardHeight = cardHeader + cardBodyHeight
+    val columns = departments.ifEmpty { listOf("none" to "No departments configured") }
+    val layouts = meetings.map { meeting -> posterSectionRows(columns.map { it.first }, meeting.slots.groupingBy { it.department }.eachCount()) }
+    val cardHeights = layouts.map { rows -> cardHeader + rows.sumOf { it.height.toDouble() }.toFloat() }
     val footerHeight = 90f
-    val height = (headerHeight + meetings.size * (cardHeight + meetingTop) + footerHeight + 24).toInt().coerceAtLeast(800)
+    val height = (headerHeight + cardHeights.sum() + meetings.size * meetingTop + footerHeight + 24).toInt().coerceAtLeast(800)
+    require(height <= 16384 && width.toLong() * height * 4 <= Runtime.getRuntime().maxMemory() / 4) {
+        "This weekly card is too large. Reduce the active departments or roles before exporting."
+    }
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val cream = android.graphics.Color.rgb(244, 240, 224)
@@ -2492,7 +2521,8 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
     canvas.drawText("DUTY ROSTER", margin, 248f, section)
     canvas.drawLine(margin, 276f, width - margin, 276f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ink; strokeWidth = 5f })
     var y = headerHeight
-    meetings.forEach { meeting ->
+    meetings.forEachIndexed { meetingIndex, meeting ->
+        val cardHeight = cardHeights[meetingIndex]
         val cardRect = android.graphics.RectF(margin, y, width - margin, y + cardHeight)
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = cream })
         canvas.drawRect(cardRect, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; style = Paint.Style.STROKE; strokeWidth = 4f })
@@ -2516,23 +2546,24 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         val meta = "$meetingDate · ${prettyTime(meeting.time)}"
         val metaWidth = date.measureText(meta)
         canvas.drawText(meta, width - margin - 22f - metaWidth, y + 46f, date)
-        val columns=departments.ifEmpty { listOf("none" to "No departments configured") }
         val innerLeft = margin + 24f
         val innerRight = width - margin - 24f
-        val colWidth = (innerRight - innerLeft) / columns.size
-        columns.forEachIndexed { index, (deptId, departmentLabel) ->
-            val left = innerLeft + index * colWidth
-            if (index > 0) canvas.drawLine(left - 16f, y + cardHeader + 24f, left - 16f, y + cardHeight - 24f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; strokeWidth = 3f })
-            val label=departmentLabel.uppercase().take(22)
-            canvas.drawText(label, left, y + cardHeader + 42f, deptTitle)
-            val columnSlots = meeting.slots.filter { it.department == deptId }
-            columnSlots.forEachIndexed { slotIndex, slot ->
-                val slotY = y + cardHeader + 80f + slotIndex * slotHeight
-                val role = slot.label.uppercase().take(28)
-                canvas.drawText(role, left, slotY, rolePaint)
-                val person = slot.name?.takeIf { it.isNotBlank() } ?: "—"
-                canvas.drawText(person, left, slotY + 27f, if (person == "—") emptyPaint else namePaint)
+        var sectionTop = y + cardHeader
+        layouts[meetingIndex].forEach { section ->
+            val colWidth = (innerRight - innerLeft) / section.departments.size
+            section.departments.forEachIndexed { index, deptId ->
+                val left = innerLeft + index * colWidth
+                if (index > 0) canvas.drawLine(left - 16f, sectionTop + 24f, left - 16f, sectionTop + section.height - 24f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = border; strokeWidth = 3f })
+                val label = columns.first { it.first == deptId }.second.uppercase().take(22)
+                canvas.drawText(label, left, sectionTop + 42f, deptTitle)
+                meeting.slots.filter { it.department == deptId }.forEachIndexed { slotIndex, slot ->
+                    val slotY = sectionTop + 80f + slotIndex * slotHeight
+                    canvas.drawText(slot.label.uppercase().take(28), left, slotY, rolePaint)
+                    val person = slot.name?.takeIf { it.isNotBlank() } ?: "—"
+                    canvas.drawText(person, left, slotY + 27f, if (person == "—") emptyPaint else namePaint)
+                }
             }
+            sectionTop += section.height
         }
         y += cardHeight + meetingTop
     }

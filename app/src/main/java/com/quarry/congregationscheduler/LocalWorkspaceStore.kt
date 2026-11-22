@@ -123,29 +123,25 @@ class LocalWorkspaceStore(context: Context) {
 
     private fun writeAutomaticBackup(treeUriOverride:Uri?=null) {
         val treeUri=treeUriOverride ?: backupPreferences.getString("tree_uri",null)?.let(Uri::parse) ?: error("Choose a backup folder first.")
-        val fileName="JW-Task-Scheduler-Auto.bcdv"
-        val treeId=DocumentsContract.getTreeDocumentId(treeUri)
-        val rootDocumentUri=DocumentsContract.buildDocumentUriUsingTree(treeUri,treeId)
-        val childrenUri=DocumentsContract.buildChildDocumentsUriUsingTree(treeUri,treeId)
-        var target:Uri?=null
-        resolver.query(childrenUri,arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,DocumentsContract.Document.COLUMN_DISPLAY_NAME),null,null,null)?.use { cursor ->
-            val idColumn=cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-            val nameColumn=cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-            while(cursor.moveToNext()) {
-                if(nameColumn>=0 && cursor.getString(nameColumn)==fileName) {
-                    target=DocumentsContract.buildDocumentUriUsingTree(treeUri,cursor.getString(idColumn))
-                    break
+        val treeId = DocumentsContract.getTreeDocumentId(treeUri)
+        val directory = DocumentsContract.buildDocumentUriUsingTree(treeUri, treeId)
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeId)
+        val documents = object : BackupDocuments<Uri> {
+            override fun find(name: String): Uri? {
+                resolver.query(children, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { cursor ->
+                    while (cursor.moveToNext()) if (cursor.getString(1) == name) return DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(0))
                 }
+                return null
             }
+            override fun create(name: String): Uri = DocumentsContract.createDocument(resolver, directory, "application/octet-stream", name) ?: error("Could not create backup file.")
+            override fun write(document: Uri, bytes: ByteArray) {
+                resolver.openOutputStream(document, "wt")?.use { it.write(bytes) } ?: error("Could not write backup file.")
+            }
+            override fun read(document: Uri): ByteArray = resolver.openInputStream(document)?.use { it.readBytes() } ?: error("Could not verify backup file.")
+            override fun rename(document: Uri, name: String): Uri = DocumentsContract.renameDocument(resolver, document, name) ?: error("This folder does not support safe backup replacement. Choose another folder.")
+            override fun delete(document: Uri) { check(DocumentsContract.deleteDocument(resolver, document)) }
         }
-        val backupUri=target ?: DocumentsContract.createDocument(resolver,rootDocumentUri,"application/octet-stream",fileName)
-            ?: error("Could not create the .bcdv backup file in the selected folder.")
-        val snapshot=JSONObject(root.toString()).put("backupMetadata",JSONObject()
-            .put("format","JW Task Scheduler Device Backup")
-            .put("createdAt",Instant.now().toString())
-            .put("fileExtension",".bcdv"))
-        resolver.openOutputStream(backupUri,"wt")?.bufferedWriter(Charsets.UTF_8)?.use { it.write(snapshot.toString(2)) }
-            ?: error("Could not write the automatic backup file.")
+        replaceVerifiedBackup(documents, "JW-Task-Scheduler-Auto.bcdv", export().toByteArray(Charsets.UTF_8))
     }
 
     @Synchronized fun export(): String = JSONObject(root.toString()).put("backupMetadata",JSONObject()
@@ -266,10 +262,10 @@ class LocalWorkspaceStore(context: Context) {
         row.put("slots",JSONArray(entries)); all.put(month,JSONArray(map.values.toList())); save()
     }
     @Synchronized fun savePerson(person: Person): Person {
-        val a=root.getJSONArray("people"); val id=person.id.ifBlank { ((0 until a.length()).mapNotNull { a.optJSONObject(it)?.optString("id")?.toLongOrNull() }.maxOrNull() ?: 0L).plus(1).toString() }
+        val a=root.getJSONArray("people"); val id=person.id.ifBlank { newLocalPersonId() }
         val saved=person.copy(id=id); val rows=(0 until a.length()).map { a.getJSONObject(it) }.filterNot { it.optString("id")==id }.toMutableList(); rows += personJson(saved); root.put("people",JSONArray(rows)); save(); return saved
     }
-    @Synchronized fun deletePerson(id:String) { val a=root.getJSONArray("people"); root.put("people",JSONArray((0 until a.length()).map { a.getJSONObject(it) }.filterNot { it.optString("id")==id })); save() }
+    @Synchronized fun deletePerson(id:String) { val a=root.getJSONArray("people"); root.put("people",JSONArray((0 until a.length()).map { a.getJSONObject(it) }.filterNot { it.optString("id")==id })); root.optJSONObject("photos")?.remove("person:$id"); save() }
     @Synchronized fun settings(value:WorkspaceSettings) {
         val settings=root.optJSONObject("settings") ?: JSONObject()
         settings.put("name",value.name).put("thursday",value.thursday).put("saturday",value.saturday).put("sunday",value.sunday)

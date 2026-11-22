@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.74
+- Prevent an older month request from replacing the selected month's schedule.
+- Use permanent local personnel IDs so deleted personnel history cannot move to a new person.
+- Move local saves, photo storage, restore, and automatic backups off the UI thread.
+- Verify new automatic backups before replacing the previous file; preserve the previous backup on failure.
+- Render export previews in the background and reuse them while zooming or opening pickers.
+- Fit additional roles and departments into dynamically sized export cards.
+- Support Java date/time APIs on Android 7 with core library desugaring.
+
 ## 1.0.73
 - Connect the shared workspace to the permanent Production API address so it uses the configured FCM server credential.
 - Keep production updates independent of the old main preview alias.
