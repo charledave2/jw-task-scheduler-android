@@ -58,6 +58,7 @@ jobs:
         with:
           api-level: ${{ matrix.api }}
           arch: x86_64
+          profile: pixel_2
           target: default
           disable-animations: true
           script: ${{ matrix.api == 24 && 'bash .github/scripts/run-minimum-api-tests.sh' || 'bash .github/scripts/run-ui-checks.sh' }}

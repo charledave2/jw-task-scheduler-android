@@ -82,6 +82,8 @@ class UiConsistencyTest {
                 }
                 device.waitForIdle()
                 compose.waitForIdle()
+                val expectedWidth = when (name) { "landscape" -> 640; "tablet" -> 1066; else -> 360 }
+                compose.waitUntil(10000) { kotlin.math.abs(compose.activity.resources.configuration.screenWidthDp - expectedWidth) <= 2 }
                 val bounds = compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().boundsInWindow
                 val density = compose.activity.resources.displayMetrics.density
                 assertTrue("$name dialog too wide: $bounds", bounds.width / density <= 481f)
