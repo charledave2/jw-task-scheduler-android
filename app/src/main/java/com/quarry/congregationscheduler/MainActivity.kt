@@ -620,9 +620,11 @@ fun SchedulerApp(appLock: AppLockController) {
                                 "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
                                 "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
                                     if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
-                                    else runCatching { store.setAutoBackupEnabled(enabled) }.onSuccess {
-                                        scope.launch { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
-                                    }.onFailure { error -> scope.launch { snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") } }
+                                    else scope.launch {
+                                        runCatching { store.setAutoBackupEnabled(enabled) }
+                                            .onSuccess { snackbar.showSnackbar(if (enabled) "Automatic .bcdv backup enabled." else "Automatic backup turned off.") }
+                                            .onFailure { error -> snackbar.showSnackbar(error.message ?: "Could not update automatic backup.") }
+                                    }
                                 })
                                 else -> HomeScreen(store, onGo = { if(store.canOpenPage(it)) store.page.value = it else scope.launch { snackbar.showSnackbar("This page is not available for your account.") } }, onOpenCalendar = openCalendar)
                             }
