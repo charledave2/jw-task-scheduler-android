@@ -60,4 +60,16 @@ jobs:
           arch: x86_64
           target: default
           disable-animations: true
-          script: ${{ matrix.api == 24 && 'bash .github/scripts/run-minimum-api-tests.sh' || 'gradle --no-daemon :app:connectedDebugAndroidTest' }}
+          script: ${{ matrix.api == 24 && 'bash .github/scripts/run-minimum-api-tests.sh' || 'bash .github/scripts/run-ui-checks.sh' }}
+
+      - name: Upload UI review screenshots and test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-review-api-${{ matrix.api }}
+          path: |
+            ui-review/
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore
+          retention-days: 7

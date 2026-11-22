@@ -241,3 +241,9 @@ SOFTWARE.
 
 AndroidX Biometric 1.1.0 and AppCompat 1.7.0 are licensed under the Apache License, Version 2.0 (license text above).
 Sources: https://android.googlesource.com/platform/frameworks/support/ and https://developer.android.com/jetpack/androidx/releases/biometric
+
+## Google Sans
+
+Copyright 2025 The Google Sans Project Authors. Distributed under SIL Open Font License 1.1; bundled license: app/src/main/assets/licenses/google_sans_OFL.txt.
+Source: https://github.com/google/fonts/tree/main/ofl/googlesans . Source font blob: a5e76cc713206f1cfe9a7fc31cc1b6f035034d81.
+The bundled static weights are instantiated from the upstream variable font and subset to Latin and common punctuation for Android 7 compatibility. Other scripts use Android font fallback.

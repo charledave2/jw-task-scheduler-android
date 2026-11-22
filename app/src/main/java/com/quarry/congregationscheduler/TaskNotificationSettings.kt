@@ -23,47 +23,61 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun TaskNotificationSettings(store: AppStore, scope: CoroutineScope, snackbar: SnackbarHostState) {
     val context = LocalContext.current
-    var status by remember { mutableStateOf<JSONObject?>(null) }
+    var panel by remember(store.user.value?.id) { mutableStateOf<NotificationPanelState>(NotificationPanelState.Loading) }
+    var refresh by remember { mutableIntStateOf(0) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    fun decodeStatus(value: JSONObject): NotificationPanelState.Ready = NotificationPanelState.Ready(
+        value.optJSONObject("person")?.optString("name")?.takeIf { it.isNotBlank() },
+        value.optBoolean("configured"), value.optInt("devices"))
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) { store.syncPush(); scope.launch { snackbar.showSnackbar("Notifications enabled. This device will register when online.") } }
+        if (granted) { store.syncPush(); refresh++; scope.launch { snackbar.showSnackbar("Notifications enabled. This device will register when online.") } }
     }
-    LaunchedEffect(store.user.value?.id) {
-        try { status = store.notificationStatus() } catch (e: Exception) { error = e.message }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event -> if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) refresh++ }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
     }
-    OutlinedCard(Modifier.fillMaxWidth().padding(bottom = 12.dp)) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    LaunchedEffect(store.user.value?.id, refresh) {
+        panel = NotificationPanelState.Loading
+        try { panel = decodeStatus(store.notificationStatus()) }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: Exception) { panel = NotificationPanelState.Failed(e.message ?: "Could not check notification status.") }
+    }
+    OutlinedCard(Modifier.fillMaxWidth().padding(bottom = 12.dp), shape = MaterialTheme.shapes.medium) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Icon(Icons.TwoTone.Notifications, null); Text("Task notifications", style = MaterialTheme.typography.titleSmall) }
-            Text("Receive new tasks assigned to the personnel linked to your account.", fontSize = 12.sp)
-            val person = status?.optJSONObject("person")
-            Text("Linked personnel: ${person?.optString("name") ?: "Ask an administrator to link your account"}", fontSize = 12.sp)
-            if (!BuildConfig.FCM_ENABLED) Text("Push notifications are available in the release app. TEST builds use a separate package.", fontSize = 12.sp)
-            if (status?.optBoolean("configured") == false) Text("Server setup is pending. Your administrator must configure Firebase credentials.", fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
-            error?.let { Text(it, fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = BuildConfig.FCM_ENABLED && !busy, onClick = {
+            Text("Receive new tasks assigned to the personnel linked to your account.", style = MaterialTheme.typography.bodySmall)
+            NotificationStatusDetails(panel, onRetry = { refresh++ })
+            Text(if (TaskPush.allowed(context)) "Enabled on this device" else "Disabled on this device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!BuildConfig.FCM_ENABLED) Text("Push notifications are available in the release app. TEST builds use a separate package.", style = MaterialTheme.typography.bodySmall)
+            error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            NotificationActionButtons(
+                settingsEnabled = BuildConfig.FCM_ENABLED && !busy,
+                testEnabled = BuildConfig.FCM_ENABLED && !busy && (panel as? NotificationPanelState.Ready)?.configured == true,
+                busy = busy,
+                onSettings = {
                     if (Build.VERSION.SDK_INT >= 33 && !TaskPush.allowed(context)) permission.launch(Manifest.permission.POST_NOTIFICATIONS)
                     else context.startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
-                }) { Text("Notification settings", fontSize = 11.sp) }
-                Button(enabled = BuildConfig.FCM_ENABLED && !busy, onClick = {
+                },
+                onTest = {
                     scope.launch {
-                        busy = true
+                        busy = true; error = null
                         try {
                             TaskPush.registerNow(context)
                             val count = store.testNotification()
-                            status = store.notificationStatus()
-                            error = null
+                            panel = decodeStatus(store.notificationStatus())
                             snackbar.showSnackbar("Test accepted by FCM for $count device(s).")
                         } catch (e: Exception) { error = e.message ?: "Could not send the test." }
                         finally { busy = false }
                     }
-                }) { Text(if (busy) "Sending…" else "Test", fontSize = 11.sp) }
-            }
-            if (store.user.value?.role == "admin") TextButton(enabled = !busy, onClick = {
+                })
+            if (store.user.value?.role == "admin") TextButton(enabled = !busy && panel is NotificationPanelState.Ready, onClick = {
                 scope.launch {
                     busy = true
                     try {
@@ -122,7 +136,7 @@ private fun PersonnelLinkDialog(store: AppStore, account: ManagedUser, onDismiss
             OutlinedTextField(search, { search = it }, label = { Text("Search personnel") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
-            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
+            if (loaded) LazyColumn(Modifier.fillMaxWidth().heightIn(max = 260.dp)) {
                 item { Row(Modifier.fillMaxWidth().clickable(enabled = !busy) { selected = null }.padding(8.dp)) { RadioButton(selected == null, onClick = null); Text("Not linked", Modifier.padding(start = 8.dp)) } }
                 items(rows.filter { it.second.contains(search, true) }, key = { it.first }) { person ->
                     Row(Modifier.fillMaxWidth().clickable(enabled = !busy) { selected = person.first }.padding(8.dp)) {
