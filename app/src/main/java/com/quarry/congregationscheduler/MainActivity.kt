@@ -2294,16 +2294,17 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
         date != null && date in chosenWeek.first..chosenWeek.second && YearMonth.from(date) == month
     }.sortedBy { it.date }
     val period = "${chosenWeek.first.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))} – ${chosenWeek.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}"
-    val posterDepartments = if(store.localMode) store.localConfig.value?.departments?.filter { it.active }?.map { it.id to it.label }.orEmpty()
-        else listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
+    val posterDepartments = store.workspaceConfig?.departments?.filter { department ->
+        department.active || selectedMeetings.any { meeting -> meeting.slots.any { it.department == department.id } }
+    }?.map { it.id to it.label }.orEmpty()
     val congregation = exportData?.settings?.name ?: "Congregation"
-    val poster by produceState<Bitmap?>(null, congregation, selectedMeetings, period, posterDepartments) {
-        value = null
-        try {
-            val rendered = withContext(Dispatchers.Default) { renderSchedulePoster(congregation, selectedMeetings, period, posterDepartments) }
-            value = rendered
-        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (e: Exception) { loadError = e.message ?: "Could not render schedule image." }
+    val poster by key(congregation, selectedMeetings, period, posterDepartments) {
+        produceState<Bitmap?>(null) {
+            try {
+                value = withContext(Dispatchers.Default) { renderSchedulePoster(congregation, selectedMeetings, period, posterDepartments) }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (e: Exception) { loadError = e.message ?: "Could not render schedule image." }
+        }
     }
     val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
