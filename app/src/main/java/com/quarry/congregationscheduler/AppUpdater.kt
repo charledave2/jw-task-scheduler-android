@@ -43,7 +43,7 @@ object AppUpdater {
             if (release.optBoolean("draft") || release.optBoolean("prerelease")) return@withContext null
             val tag = release.optString("tag_name").trim()
             val version = tag.removePrefix("v").takeIf { it.isNotBlank() } ?: return@withContext null
-            if (!isNewer(version, BuildConfig.VERSION_NAME)) return@withContext null
+            if (!isNewerAppVersion(version, BuildConfig.VERSION_NAME)) return@withContext null
             val expectedName = "$APK_PREFIX$version$APK_SUFFIX"
             val assets = release.optJSONArray("assets") ?: return@withContext null
             val asset = (0 until assets.length()).map { assets.getJSONObject(it) }
@@ -114,14 +114,4 @@ object AppUpdater {
 
     fun canInstallPackages(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || context.packageManager.canRequestPackageInstalls()
 
-    private fun isNewer(remote: String, current: String): Boolean {
-        val left = remote.split('.').map { it.toIntOrNull() ?: 0 }
-        val right = current.removePrefix("v").split('.').map { it.toIntOrNull() ?: 0 }
-        for (index in 0 until maxOf(left.size, right.size)) {
-            val a = left.getOrElse(index) { 0 }
-            val b = right.getOrElse(index) { 0 }
-            if (a != b) return a > b
-        }
-        return false
-    }
 }

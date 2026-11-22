@@ -1,6 +1,7 @@
 # Changelog
 
 ## 1.0.74
+- Compare test-build version suffixes correctly so an older release cannot interrupt startup with an update prompt.
 - Prevent an older month request from replacing the selected month's schedule.
 - Use permanent local personnel IDs so deleted personnel history cannot move to a new person.
 - Move local saves, photo storage, restore, and automatic backups off the UI thread.
