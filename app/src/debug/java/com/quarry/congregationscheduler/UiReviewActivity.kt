@@ -51,7 +51,7 @@ class UiReviewActivity : ComponentActivity() {
                                 Person("ui-review", "Sample Brother", 2, "active", false, true, true, true, true), null, emptyList(), YearMonth.now(),
                                 onDismiss = { screen = "navigation" }, onSave = {}, onDelete = {}, onPhotoSelected = { _, _ -> }, onRemovePhoto = {})
                             "preview" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) { SchedulePosterPreview(poster) }
-                            "status" -> Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { NotificationStatusDetails(panel) { panel = NotificationPanelState.Loading }; NotificationActionButtons(true, true, false, {}, {}) }
+                            "status" -> Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).imePadding().verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { NotificationStatusDetails(panel) { panel = NotificationPanelState.Loading }; NotificationActionButtons(true, true, false, {}, {}) }
                             else -> Box(Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.BottomCenter) {
                                 PreviewBottomNavigation(page, moreOpen, { true }, { moreOpen = true }, { page = it; moreOpen = false })
                             }

@@ -24,11 +24,15 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.SemanticsPropertyKey
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlin.math.roundToInt
+
+internal val SchedulerImeVisibleKey = SemanticsPropertyKey<Boolean>("SchedulerImeVisible")
 
 /** Insets and caps are applied before content fills its available bounds. */
 @Composable
@@ -51,8 +55,9 @@ internal fun SchedulerDialog(
             Box(Modifier.matchParentSize().pointerInput(onDismissRequest, properties.dismissOnClickOutside) {
                 detectTapGestures { if (properties.dismissOnClickOutside) onDismissRequest() }
             })
+            val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
             Box(Modifier.widthIn(max = 480.dp).fillMaxWidth().heightIn(max = maxHeight)
-                .testTag("scheduler-dialog").pointerInput(Unit) { detectTapGestures { } }) {
+                .testTag("scheduler-dialog").semantics { this[SchedulerImeVisibleKey] = imeVisible }.pointerInput(Unit) { detectTapGestures { } }) {
                 content()
             }
         }
