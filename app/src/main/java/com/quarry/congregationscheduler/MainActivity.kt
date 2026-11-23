@@ -734,12 +734,16 @@ internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(Str
     if (WindowInsets.ime.getBottom(LocalDensity.current) > 0) return
     val compact = LocalConfiguration.current.screenHeightDp < 420
     val primary = primaryNavigationPage(canOpen)
+    val destinations = navigationDestinations(canOpen)
+    val rows = if (LocalDensity.current.fontScale > 1.3f && LocalConfiguration.current.screenWidthDp < 600) destinations.chunked(3) else listOf(destinations)
     Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
         Surface(Modifier.widthIn(max = 600.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp),
             color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 3.dp,
             border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
-                navigationDestinations(canOpen).forEach { item ->
+            Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              rows.forEach { row ->
+               Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                row.forEach { item ->
                     val selected = navigationSelected(item.page, page, moreOpen)
                     val interaction = remember(item.page) { MutableInteractionSource() }
                     val pressed by interaction.collectIsPressedAsState()
@@ -767,6 +771,8 @@ internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(Str
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
                 }
+               }
+              }
             }
         }
     }

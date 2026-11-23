@@ -126,6 +126,13 @@ class UiConsistencyTest {
                 assertTrue("$name notification actions overlap", test.left >= settings.right || test.top >= settings.bottom)
                 screenshot("notification-$name")
                 compose.runOnIdle { compose.activity.screen = "navigation" }
+                if (name == "large-font") {
+                    listOf("Calendar", "Manage", "Export").forEach { label ->
+                        val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+                        compose.onNodeWithText(label, useUnmergedTree = true).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+                        assertFalse("Navigation label is truncated at 2x text: $label", layouts.single().hasVisualOverflow)
+                    }
+                }
                 screenshot("navigation-$name")
             }
         } finally {
