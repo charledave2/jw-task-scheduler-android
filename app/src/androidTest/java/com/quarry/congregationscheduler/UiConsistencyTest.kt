@@ -23,6 +23,9 @@ class UiConsistencyTest {
     private val device get() = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation())
     private fun screenshot(name: String) {
         compose.waitForIdle()
+        // Wait for accessibility and the platform window to settle before capturing its framebuffer.
+        device.waitForIdle()
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync()
         val image = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot() ?: error("Could not capture UI screenshot")
         val resolver = compose.activity.contentResolver
         val values = ContentValues().apply {
@@ -96,8 +99,9 @@ class UiConsistencyTest {
                 compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
                 if (name == "large-font") {
                     compose.onAllNodes(hasSetTextAction()).onFirst().performScrollTo().assertIsDisplayed().performClick()
-                    compose.waitUntil(10000) { compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().config[SchedulerImeVisibleKey] }
-                    screenshot("dialog-$name-keyboard")
+                    try {
+                        compose.waitUntil(10000) { compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().config[SchedulerImeVisibleKey] }
+                    } finally { screenshot("dialog-$name-keyboard") }
                     compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
                     val dialog = compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().boundsInWindow
                     val save = compose.onNodeWithText("Save changes", useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
@@ -118,6 +122,7 @@ class UiConsistencyTest {
                 screenshot("navigation-$name")
             }
         } finally {
+            compose.runOnIdle { compose.activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }
             device.executeShellCommand("wm size reset")
             device.executeShellCommand("wm density reset")
             device.executeShellCommand("settings put secure show_ime_with_hard_keyboard 0")
