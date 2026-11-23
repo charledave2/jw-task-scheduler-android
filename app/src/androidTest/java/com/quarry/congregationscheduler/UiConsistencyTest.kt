@@ -81,11 +81,14 @@ class UiConsistencyTest {
             device.executeShellCommand("settings put secure show_ime_with_hard_keyboard 1")
             val cases = listOf("portrait", "landscape", "tablet", "large-font")
             for (name in cases) {
+                val fontScale = if (name == "large-font") 2f else 1f
+                device.executeShellCommand("settings put system font_scale $fontScale")
+                compose.waitUntil(10000) { kotlin.math.abs(compose.activity.resources.configuration.fontScale - fontScale) < .01f }
                 device.executeShellCommand(if (name == "tablet") "wm size 1600x2560" else "wm size 1080x1920")
                 device.executeShellCommand(if (name == "tablet") "wm density 240" else "wm density 480")
                 compose.runOnIdle {
                     compose.activity.requestedOrientation = if (name == "landscape") ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                    compose.activity.reviewFontScale = if (name == "large-font") 2f else 1f
+                    compose.activity.reviewFontScale = fontScale
                     compose.activity.screen = "person"
                 }
                 device.waitForIdle()
@@ -131,7 +134,10 @@ class UiConsistencyTest {
                     listOf("Calendar", "Manage", "Export").forEach { label ->
                         val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
                         compose.onNodeWithText(label, useUnmergedTree = true).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
-                        assertFalse("Navigation label is truncated at 2x text: $label", layouts.single().hasVisualOverflow)
+                        val layout = layouts.single()
+                        assertEquals("Navigation label wraps at 2x text: $label", 1, layout.lineCount)
+                        assertFalse("Navigation label is ellipsized at 2x text: $label", layout.isLineEllipsized(0))
+                        assertTrue("Navigation label extends past its bounds: $label", layout.getLineRight(0) <= layout.size.width + 1f)
                     }
                 }
             }
@@ -140,6 +146,7 @@ class UiConsistencyTest {
             device.executeShellCommand("wm size reset")
             device.executeShellCommand("wm density reset")
             device.executeShellCommand("settings put secure show_ime_with_hard_keyboard 0")
+            device.executeShellCommand("settings put system font_scale 1.0")
         }
     }
 }
