@@ -96,13 +96,15 @@ class UiConsistencyTest {
                 val density = compose.activity.resources.displayMetrics.density
                 assertTrue("$name dialog too wide: $bounds", bounds.width / density <= 481f)
                 screenshot("dialog-$name")
+                if (name == "landscape" || name == "large-font") compose.onNodeWithText("Save changes", useUnmergedTree = true).performScrollTo()
                 compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
                 if (name == "large-font") {
                     compose.onAllNodes(hasSetTextAction()).onFirst().performScrollTo().assertIsDisplayed().performClick()
                     try {
                         compose.waitUntil(10000) { compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().config[SchedulerImeVisibleKey] }
                     } finally { screenshot("dialog-$name-keyboard") }
-                    compose.onNodeWithText("Save changes", useUnmergedTree = true).assertIsDisplayed()
+                    compose.onNodeWithText("Save changes", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+                    screenshot("dialog-$name-keyboard-actions")
                     val dialog = compose.onNodeWithTag("scheduler-dialog").fetchSemanticsNode().boundsInWindow
                     val save = compose.onNodeWithText("Save changes", useUnmergedTree = true).fetchSemanticsNode().boundsInWindow
                     assertTrue("Save action falls below the keyboard-safe dialog", save.bottom <= dialog.bottom + 1f)

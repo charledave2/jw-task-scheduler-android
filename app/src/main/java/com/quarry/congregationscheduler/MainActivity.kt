@@ -761,7 +761,7 @@ internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(Str
                                     tint = if (selected && prominent) MaterialTheme.colorScheme.onPrimary else if (selected || prominent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        Text(item.label, style = MaterialTheme.typography.labelMedium,
+                        Text(item.label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
@@ -1657,9 +1657,12 @@ internal fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Pers
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null && person != null) scope.launch { photoBusy = true; try { onPhotoSelected(person.id, uri); photoError = null } catch (e: Exception) { photoError = e.message ?: "Could not upload photo." } finally { photoBusy = false } }
     }
+    val scrollWholeForm = LocalConfiguration.current.screenHeightDp < 420 || LocalDensity.current.fontScale > 1.3f
+    val formScroll = rememberScrollState()
+    val fieldsScroll = rememberScrollState()
     SchedulerDialog(onDismissRequest = { if (!saving) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Card(Modifier.fillMaxWidth().heightIn(max = 680.dp), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column {
+            Column(if (scrollWholeForm) Modifier.verticalScroll(formScroll) else Modifier) {
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(if (isNew) "NEW PERSON" else "PERSONNEL DETAILS", fontSize = 12.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
@@ -1668,7 +1671,7 @@ internal fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Pers
                     IconButton(onClick = onDismiss, enabled = !saving) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column((if (scrollWholeForm) Modifier else Modifier.weight(1f, fill = false).verticalScroll(fieldsScroll)).fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (!isNew) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(name, 56.dp, photo)
