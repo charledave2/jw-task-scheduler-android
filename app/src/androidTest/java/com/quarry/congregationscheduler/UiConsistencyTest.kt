@@ -30,7 +30,8 @@ class UiConsistencyTest {
         device.waitForIdle()
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
         // PixelCopy through Compose captures the rendered root, including a separate dialog window.
-        val image = compose.onAllNodes(isRoot()).onLast().captureToImage().asAndroidBitmap()
+        val target = if (name.startsWith("dialog-")) compose.onNodeWithTag("scheduler-dialog") else compose.onRoot()
+        val image = target.captureToImage().asAndroidBitmap()
         val resolver = compose.activity.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
