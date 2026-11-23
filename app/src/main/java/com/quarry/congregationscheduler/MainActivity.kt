@@ -765,7 +765,7 @@ internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(Str
                                     tint = if (selected && prominent) MaterialTheme.colorScheme.onPrimary else if (selected || prominent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                        Text(item.label, style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        Text(item.label, style = MaterialTheme.typography.labelMedium, letterSpacing = 0.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                             color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center)
