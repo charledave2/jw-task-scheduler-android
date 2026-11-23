@@ -1,6 +1,9 @@
 # Changelog
 
 ## 1.0.75
+- Keep encrypted sign-in across app restarts and temporary network errors; cache the signed-in profile securely.
+- Serialize token rotation across background work and foreground requests; save rotated credentials durably.
+- Reuse secure storage and recover permanently invalidated keys without resetting sessions for temporary Keystore errors.
 - Keep dialogs centered and bounded on phones and tablets, including when the keyboard opens.
 - Add bounded panning and a Fit control to the zoomable schedule preview.
 - Remove the unverified share-success popup when returning from the Android share sheet.

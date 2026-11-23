@@ -134,6 +134,7 @@ class AppStore(context: android.content.Context) {
     val allTaskReviews = mutableStateOf<List<TaskReview>?>(null)
     val users = mutableStateOf<List<ManagedUser>>(emptyList())
     val loading = mutableStateOf(false)
+    val restoringSession = mutableStateOf(false)
     val error = mutableStateOf<String?>(null)
     val online = mutableStateOf(false)
     val lastSyncedAt = mutableStateOf(preferences.getString("last_successful_sync", null))
@@ -191,7 +192,7 @@ class AppStore(context: android.content.Context) {
     suspend fun refreshPageAccess() {
         if (localMode || user.value == null) return
         try { user.value = api.getMe() } catch (e: Exception) {
-            if (e is ApiException && e.code == 401) signOut()
+            if (e is SessionExpiredException) user.value = api.cachedUser()
         }
     }
     fun syncPush() { if (!localMode && user.value != null) TaskPush.schedule(appContext) }
@@ -221,6 +222,8 @@ class AppStore(context: android.content.Context) {
 
     suspend fun initialize() {
         loading.value = true
+        restoringSession.value = false
+        error.value = null
         try {
             if (mode.value == "local") {
                 user.value = UserInfo("local-admin", "local", preferences.getString("local_display_name", "Administrator") ?: "Administrator", "admin", "local")
@@ -228,7 +231,10 @@ class AppStore(context: android.content.Context) {
                 load()
                 return
             }
-            if (mode.value == null && !api.hasSession()) return
+            val saved = withContext(Dispatchers.IO) { api.hasSession() to api.cachedUser() }
+            if (mode.value == null && !saved.first) return
+            if (saved.first) mode.value = "shared"
+            user.value = saved.second
             user.value = api.getMe()
             mode.value = "shared"
             preferences.edit().putString("workspace_mode", "shared").apply()
@@ -236,8 +242,16 @@ class AppStore(context: android.content.Context) {
             refreshAvatar()
             load()
         } catch (e: Exception) {
-            if (e is ApiException && e.code == 401) api.logout()
-            user.value = null
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            if (e is SessionExpiredException) user.value = api.cachedUser()
+            else {
+                restoringSession.value = user.value == null && mode.value == "shared"
+                error.value = "Could not reconnect. Your saved sign-in is kept. Check your connection, unlock your device, and try again."
+                if (user.value != null) {
+                    mode.value = "shared"
+                    preferences.edit().putString("workspace_mode", "shared").apply()
+                }
+            }
         } finally { loading.value = false }
     }
     suspend fun login(username: String, password: String) {
@@ -578,6 +592,15 @@ fun SchedulerApp(appLock: AppLockController) {
             LoadingSplashScreen()
         } else if (signedIn == null && workspaceMode == null) {
             WorkspaceModeScreen(onLocal = { name -> scope.launch { runCatching { store.createLocalWorkspace(name); store.load() }.onFailure { snackbar.showSnackbar(it.message ?: "Could not create local workspace.") } } }, onShared = { store.chooseSharedWorkspace() })
+        } else if (signedIn == null && store.restoringSession.value) {
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Reconnect to your workspace", style = MaterialTheme.typography.titleLarge)
+                    Text(error ?: "Your saved sign-in is kept. Try connecting again.", style = MaterialTheme.typography.bodyMedium)
+                    Button(enabled = !loading, onClick = { scope.launch { store.initialize() } }) { Text(if (loading) "Connecting…" else "Try again") }
+                    TextButton(enabled = !loading, onClick = { scope.launch { store.signOut(); store.restoringSession.value = false } }) { Text("Sign out") }
+                }
+            }
         } else if (signedIn == null) {
             LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
