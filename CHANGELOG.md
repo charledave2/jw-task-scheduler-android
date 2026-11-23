@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.75
+- Keep encrypted sign-in across app restarts and temporary network errors; cache the signed-in profile securely.
+- Serialize token rotation across background work and foreground requests; save rotated credentials durably.
+- Reuse secure storage and recover permanently invalidated keys without resetting sessions for temporary Keystore errors.
+- Keep dialogs centered and bounded on phones and tablets, including when the keyboard opens.
+- Add bounded panning and a Fit control to the zoomable schedule preview.
+- Remove the unverified share-success popup when returning from the Android share sheet.
+- Show clear loading, linked, unlinked and error states in notification settings, with retry.
+- Use bundled Google Sans in the app and PNG export, with more readable compact labels.
+- Unify page titles and remove repeated page headings.
+- Balance navigation for account permissions and show the current destination consistently.
+- Use subtle navigation press feedback and allow notification actions to wrap at larger font sizes.
+
 ## 1.0.74
 - Compare test-build version suffixes correctly so an older release cannot interrupt startup with an update prompt.
 - Prevent an older month request from replacing the selected month's schedule.

@@ -2,8 +2,6 @@ package com.quarry.congregationscheduler
 
 import android.content.Context
 import android.util.Base64
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,24 +15,6 @@ import java.time.DayOfWeek
 
 private const val API_BASE = "https://congregation-scheduler-pro.pages.dev/"
 
-class TokenStore(context: Context) {
-    private val prefs by lazy {
-        val key = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
-        EncryptedSharedPreferences.create(
-            context, "secure_session", key,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    }
-    fun getUserId() = prefs.getString("user_id", null)
-    fun saveUserId(id: String) = prefs.edit().putString("user_id", id).apply()
-    fun clearUserId() = prefs.edit().remove("user_id").apply()
-    fun getAccess() = prefs.getString("access", null)
-    fun getRefresh() = prefs.getString("refresh", null)
-    fun save(access: String, refresh: String) = prefs.edit().putString("access", access).putString("refresh", refresh).apply()
-    fun saveAccess(access: String) = prefs.edit().putString("access", access).apply()
-    fun clear() = prefs.edit().clear().apply()
-}
 
 data class Person(
     val id: String, val name: String, val group: Int, val status: String, val noThursday: Boolean,
@@ -72,14 +52,17 @@ class ApiClient(context: Context) {
     fun hasSession(): Boolean = !tokens.getAccess().isNullOrBlank() || !tokens.getRefresh().isNullOrBlank()
 
     suspend fun login(username: String, password: String): UserInfo = withContext(Dispatchers.IO) {
-        val data = raw("api/auth/mobile-login", "POST", JSONObject().put("username", username).put("password", password), null)
-        tokens.save(data.getString("access_token"), data.getString("refresh_token"))
-        parseUser(data.getJSONObject("user")).also { tokens.saveUserId(it.id) }
+        synchronized(TokenStore.refreshGate.monitor) {
+            val data = raw("api/auth/mobile-login", "POST", JSONObject().put("username", username).put("password", password), null)
+            parseUser(data.getJSONObject("user")).also { tokens.saveLogin(data.getString("access_token"), data.getString("refresh_token"), it) }
+        }
     }
 
     suspend fun logout() = withContext(Dispatchers.IO) {
-        val previousAccess = tokens.getAccess()
-        tokens.clear() // Suppress in-flight notifications immediately, including offline logout.
+        val previousAccess = synchronized(TokenStore.refreshGate.monitor) {
+            tokens.getAccess().also { tokens.clear() }
+        }
+        // Suppress in-flight notifications immediately, including offline logout.
         TaskPush.cancel(appContext)
         TaskPush.clearNotifications(appContext)
         // Best effort with the OLD account token. Never delay local sign-out on the network,
@@ -112,24 +95,42 @@ class ApiClient(context: Context) {
         return result
     }
 
-    private fun refreshAccess(): String {
-        val refresh = tokens.getRefresh() ?: throw ApiException(401, "Please sign in again.")
-        val data = raw("api/auth/mobile-refresh", "POST", JSONObject().put("refresh_token", refresh), null)
-        val access = data.getString("access_token")
-        tokens.save(access, data.getString("refresh_token"))
-        return access
+    fun cachedUser(): UserInfo? = tokens.getUser()
+
+    private fun refreshAccess(rejected: String?, expectedUser: String? = tokens.getUserId()): String = TokenStore.refreshGate.access(rejected, {
+        if (tokens.getUserId() != expectedUser) throw SessionChangedException()
+        tokens.getAccess()
+    }) {
+        val refresh = tokens.getRefresh() ?: throw SessionExpiredException()
+        val data = try { raw("api/auth/mobile-refresh", "POST", JSONObject().put("refresh_token", refresh), null) }
+            catch (e: ApiException) { if (e.code == 401) { tokens.clear(); throw SessionExpiredException() }; throw e }
+        data.getString("access_token").also { tokens.save(it, data.getString("refresh_token")) }
+    }
+
+    private fun sessionAccess(): Pair<String?, String> = synchronized(TokenStore.refreshGate.monitor) {
+        val account = tokens.getUserId()
+        account to (tokens.getAccess() ?: refreshAccess(null, account))
     }
 
     private fun request(path: String, method: String = "GET", body: JSONObject? = null): JSONObject {
-        var token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
+        val (account, savedAccess) = sessionAccess()
+        var token = savedAccess
         try { return raw(path, method, body, token) } catch (e: ApiException) {
             if (e.code != 401) throw e
-            token = refreshAccess()
+            token = refreshAccess(token, account)
             return raw(path, method, body, token)
         }
     }
 
-    suspend fun getMe(): UserInfo = withContext(Dispatchers.IO) { parseUser(request("api/auth/me").getJSONObject("user")).also { tokens.saveUserId(it.id) } }
+    suspend fun getMe(): UserInfo = withContext(Dispatchers.IO) {
+        val user = parseUser(request("api/auth/me").getJSONObject("user"))
+        synchronized(TokenStore.refreshGate.monitor) {
+            val currentId = tokens.getUserId()
+            if (tokens.getAccess() == null || (currentId != null && currentId != user.id)) throw SessionChangedException()
+            tokens.saveUser(user)
+            user
+        }
+    }
 
     suspend fun registerPushDevice(installation: String, token: String, accountId: String) = withContext(Dispatchers.IO) {
         request("api/notifications", "PUT", JSONObject().put("installation_id", installation).put("token", token).put("account_id", accountId))
@@ -269,9 +270,10 @@ class ApiClient(context: Context) {
             val status = connection.responseCode; val stream = if (status in 200..299) connection.inputStream else connection.errorStream
             val bytes = stream?.use { it.readBytes() } ?: byteArrayOf(); connection.disconnect(); return status to bytes
         }
-        var token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
+        val (account, savedAccess) = sessionAccess()
+        var token = savedAccess
         var (status, bytes) = call(token)
-        if (status == 401) { token = refreshAccess(); val retry = call(token); status = retry.first; bytes = retry.second }
+        if (status == 401) { token = refreshAccess(token, account); val retry = call(token); status = retry.first; bytes = retry.second }
         if (method == "GET" && status == 404) return null
         if (status !in 200..299) {
             val message = try { JSONObject(String(bytes, Charsets.UTF_8)).optString("error", "Request failed ($status).") } catch (_: Exception) { "Request failed ($status)." }
@@ -326,10 +328,10 @@ class ApiClient(context: Context) {
     suspend fun downloadAccountAvatar(id: String): ByteArray? = withContext(Dispatchers.IO) { avatarRequest("GET", null, id) }
 
     suspend fun deleteUser(user: ManagedUser) = withContext(Dispatchers.IO) {
-        val token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
+        val (account, token) = sessionAccess()
         try { raw("api/users?id=${user.id}", "DELETE", null, token) } catch (e: ApiException) {
             if (e.code != 401) throw e
-            raw("api/users?id=${user.id}", "DELETE", null, refreshAccess())
+            raw("api/users?id=${user.id}", "DELETE", null, refreshAccess(token, account))
         }
     }
 
@@ -371,10 +373,11 @@ class ApiClient(context: Context) {
             connection.disconnect()
             return status to bytes
         }
-        var token = tokens.getAccess() ?: throw ApiException(401, "Please sign in again.")
+        val (account, savedAccess) = sessionAccess()
+        var token = savedAccess
         var (status, bytes) = call(token)
         if (status == 401) {
-            token = refreshAccess()
+            token = refreshAccess(token, account)
             val retry = call(token)
             status = retry.first; bytes = retry.second
         }
@@ -391,6 +394,10 @@ class ApiClient(context: Context) {
     private data class MutableMeeting(val date: String, val type: String, val time: String, val slots: MutableList<Slot>, val raw: JSONObject?)
 }
 
-class ApiException(val code: Int, override val message: String) : Exception(message)
+open class ApiException(val code: Int, override val message: String) : Exception(message)
 
 
+
+class SessionExpiredException : ApiException(401, "Your session has expired. Please sign in again.")
+
+class SessionChangedException : Exception("The signed-in account changed. Please try again.")

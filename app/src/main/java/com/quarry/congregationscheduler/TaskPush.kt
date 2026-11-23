@@ -68,7 +68,10 @@ internal object TaskPush {
         if (!BuildConfig.FCM_ENABLED || !allowed(context)) return
         val tokens = TokenStore(context)
         val mode = context.getSharedPreferences("scheduler_preferences", Context.MODE_PRIVATE).getString("workspace_mode", null)
-        if (mode != "shared" || tokens.getAccess().isNullOrBlank() || tokens.getUserId() != data["account_id"]) return
+        val matchingSession = runCatching {
+            synchronized(TokenStore.refreshGate.monitor) { !tokens.getAccess().isNullOrBlank() && tokens.getUserId() == data["account_id"] }
+        }.getOrDefault(false)
+        if (mode != "shared" || !matchingSession) return
         val event = data["event_id"]?.takeIf { it.length <= 256 } ?: return
         // FCM is at-least-once; persist a small recent-event cache across process restarts.
         val preferences = prefs(context)

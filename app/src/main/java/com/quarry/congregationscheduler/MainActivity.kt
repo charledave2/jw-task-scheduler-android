@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.quarry.congregationscheduler
 
 import android.content.Intent
@@ -19,6 +21,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.platform.testTag
+import androidx.core.content.res.ResourcesCompat
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -127,6 +134,7 @@ class AppStore(context: android.content.Context) {
     val allTaskReviews = mutableStateOf<List<TaskReview>?>(null)
     val users = mutableStateOf<List<ManagedUser>>(emptyList())
     val loading = mutableStateOf(false)
+    val restoringSession = mutableStateOf(false)
     val error = mutableStateOf<String?>(null)
     val online = mutableStateOf(false)
     val lastSyncedAt = mutableStateOf(preferences.getString("last_successful_sync", null))
@@ -184,7 +192,7 @@ class AppStore(context: android.content.Context) {
     suspend fun refreshPageAccess() {
         if (localMode || user.value == null) return
         try { user.value = api.getMe() } catch (e: Exception) {
-            if (e is ApiException && e.code == 401) signOut()
+            if (e is SessionExpiredException) user.value = api.cachedUser()
         }
     }
     fun syncPush() { if (!localMode && user.value != null) TaskPush.schedule(appContext) }
@@ -214,6 +222,8 @@ class AppStore(context: android.content.Context) {
 
     suspend fun initialize() {
         loading.value = true
+        restoringSession.value = false
+        error.value = null
         try {
             if (mode.value == "local") {
                 user.value = UserInfo("local-admin", "local", preferences.getString("local_display_name", "Administrator") ?: "Administrator", "admin", "local")
@@ -221,7 +231,10 @@ class AppStore(context: android.content.Context) {
                 load()
                 return
             }
-            if (mode.value == null && !api.hasSession()) return
+            val saved = withContext(Dispatchers.IO) { api.hasSession() to api.cachedUser() }
+            if (mode.value == null && !saved.first) return
+            if (saved.first) mode.value = "shared"
+            user.value = saved.second
             user.value = api.getMe()
             mode.value = "shared"
             preferences.edit().putString("workspace_mode", "shared").apply()
@@ -229,8 +242,16 @@ class AppStore(context: android.content.Context) {
             refreshAvatar()
             load()
         } catch (e: Exception) {
-            if (e is ApiException && e.code == 401) api.logout()
-            user.value = null
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            if (e is SessionExpiredException) user.value = api.cachedUser()
+            else {
+                restoringSession.value = user.value == null && mode.value == "shared"
+                error.value = "Could not reconnect. Your saved sign-in is kept. Check your connection, unlock your device, and try again."
+                if (user.value != null) {
+                    mode.value = "shared"
+                    preferences.edit().putString("workspace_mode", "shared").apply()
+                }
+            }
         } finally { loading.value = false }
     }
     suspend fun login(username: String, password: String) {
@@ -468,8 +489,6 @@ fun SchedulerApp(appLock: AppLockController) {
     }
 
     var moreOpen by remember { mutableStateOf(false) }
-    var pendingScheduleShare by remember { mutableStateOf(false) }
-    var showScheduleShareSuccess by remember { mutableStateOf(false) }
     val profilePhotoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if(uri!=null) scope.launch { try { store.saveAvatar(uri);snackbar.showSnackbar("Profile photo updated.") } catch(e:Exception){snackbar.showSnackbar(e.message ?: "Could not upload photo.")} }
     }
@@ -492,10 +511,6 @@ fun SchedulerApp(appLock: AppLockController) {
                 scope.launch { store.checkAppUpdate() }
             }
             if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                if (pendingScheduleShare) {
-                    pendingScheduleShare = false
-                    showScheduleShareSuccess = true
-                }
                 scope.launch { store.refreshPageAccess(); store.syncPush() }
             }
         }
@@ -577,6 +592,15 @@ fun SchedulerApp(appLock: AppLockController) {
             LoadingSplashScreen()
         } else if (signedIn == null && workspaceMode == null) {
             WorkspaceModeScreen(onLocal = { name -> scope.launch { runCatching { store.createLocalWorkspace(name); store.load() }.onFailure { snackbar.showSnackbar(it.message ?: "Could not create local workspace.") } } }, onShared = { store.chooseSharedWorkspace() })
+        } else if (signedIn == null && store.restoringSession.value) {
+            Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(24.dp), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Reconnect to your workspace", style = MaterialTheme.typography.titleLarge)
+                    Text(error ?: "Your saved sign-in is kept. Try connecting again.", style = MaterialTheme.typography.bodyMedium)
+                    Button(enabled = !loading, onClick = { scope.launch { store.initialize() } }) { Text(if (loading) "Connecting…" else "Try again") }
+                    TextButton(enabled = !loading, onClick = { scope.launch { store.signOut(); store.restoringSession.value = false } }) { Text("Sign out") }
+                }
+            }
         } else if (signedIn == null) {
             LoginScreen(loading = loading, error = error, onLogin = { u, p -> scope.launch { store.login(u, p) } }, onBackToSetup = { store.returnToWorkspaceSetup() })
         } else {
@@ -590,20 +614,23 @@ fun SchedulerApp(appLock: AppLockController) {
                     }) },
                     containerColor = MaterialTheme.colorScheme.background,
                     topBar = {
+                      Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         TopAppBar(
-                            title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; "Top Performers" -> "Performance Page"; else -> page }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                            modifier = Modifier.widthIn(max = 840.dp).fillMaxWidth(),
+                            title = { Text(when (page) { "Home" -> store.data.value?.settings?.name ?: "JW Task Scheduler"; else -> uiPageTitle(page) }, fontWeight = FontWeight.SemiBold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis) },
                             navigationIcon = { Image(painterResource(R.drawable.csp_logo),null,Modifier.padding(start=16.dp,end=10.dp).size(32.dp).clip(RoundedCornerShape(9.dp))) },
                             colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
                         )
+                      }
                     },
                     snackbarHost = { SnackbarHost(snackbar) }
                 ) { padding ->
                     Column(Modifier.fillMaxSize().padding(padding)) {
                       if (!store.localMode && !store.online.value) OfflineStatusBanner(store.lastSyncedAt.value)
-                      Box(Modifier.weight(1f).fillMaxWidth()) {
+                      Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                         AnimatedContent(
                             targetState = page,
-                            modifier = Modifier.fillMaxSize(),
+                            modifier = Modifier.widthIn(max = 840.dp).fillMaxSize(),
                             transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) },
                             label = "app page transition"
                         ) { targetPage ->
@@ -617,7 +644,7 @@ fun SchedulerApp(appLock: AppLockController) {
                                 "Reports" -> ReportsScreen(store.data.value, store.workspaceConfig)
                                 "Task Review" -> if (store.canOpenPage("Task Review")) TaskReviewScreen(store, onViewTopPerformers = { store.page.value = "Top Performers" }, onReview = { meeting, slot, status, substitute, originalStatus -> try { store.reviewTask(meeting, slot, status, substitute, originalStatus); snackbar.showSnackbar("Task review saved.") } catch (e: Exception) { snackbar.showSnackbar(e.message ?: "Could not save task review.") } }) else TopPerformersScreen(store)
                                 "Top Performers" -> TopPerformersScreen(store)
-                                "Export Studio" -> ExportScreen(store, onShareLaunched = { pendingScheduleShare = true })
+                                "Export Studio" -> ExportScreen(store)
                                 "Settings & Accounts", "Settings & accounts" -> SettingsScreen(store, scope, snackbar, appLock = appLock, onDelete = { confirmDelete = it }, onAddAccount = { createAccountDialog = true }, onBackup = { backupWriter.launch("jw-task-scheduler-backup.bcdv") }, onRestore = { backupReader.launch(arrayOf("*/*")) }, onChooseAutoBackupFolder = { autoBackupFolderPicker.launch(null) }, onAutoBackupToggle = { enabled ->
                                     if (enabled && store.autoBackup.value.folderName == null) autoBackupFolderPicker.launch(null)
                                     else scope.launch {
@@ -685,9 +712,6 @@ fun SchedulerApp(appLock: AppLockController) {
                         )
                       }
         }
-        if (showScheduleShareSuccess && !appLock.locked) {
-            ScheduleShareSuccessDialog(onDismiss = { showScheduleShareSuccess = false })
-        }
         if (!appLock.locked && assignmentTarget != null && store.canOpenPage("Manage Schedule")) {
             val (meeting, slot) = assignmentTarget!!
             val occupiedOnDate = store.data.value?.meetings.orEmpty()
@@ -729,120 +753,58 @@ fun SchedulerApp(appLock: AppLockController) {
 }
 
 @Composable
-private fun PreviewBottomNavigation(page:String,moreOpen:Boolean,canOpen:(String)->Boolean,onMore:()->Unit,onNavigate:(String)->Unit) {
-    val density=LocalDensity.current
-    if(WindowInsets.ime.getBottom(density)>0)return
-    val compact=LocalConfiguration.current.screenHeightDp<420
-    val totalHeight=if(compact)88.dp else 108.dp
-    val buttonSize=if(compact)58.dp else 70.dp
-    val barHeight=if(compact)66.dp else 80.dp
-    val primary=primaryNavigationPage(canOpen)
-    val primaryLabel=when(primary){"Manage Schedule"->"Manage";"Schedule Calendar"->"Calendar";else->"Home"}
-    val primaryIcon=when(primary){"Manage Schedule"->"calendar-check";"Schedule Calendar"->"calendar-days";else->"house"}
-    val regular=listOf(
-        Triple("Home","Home","house"),
-        Triple("Schedule Calendar","Calendar","calendar-days"),
-        Triple("Export Studio","Export","file-down"),
-        Triple("More","More","more_horiz")
-    ).filter{it.first!=primary && (it.first=="More" || canOpen(it.first))}
-    val left=regular.take(2)
-    val right=regular.drop(2)
-    val scale=remember{Animatable(1f)}
-    val rotation=remember{Animatable(0f)}
-    val lift=remember{Animatable(0f)}
-    val scope=rememberCoroutineScope()
-    var motionJob by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
-    val bump=with(density){10.dp.toPx()}
-    val top=with(density){(totalHeight-barHeight).toPx()}
-    val radius=with(density){27.dp.toPx()}
-    val shoulder=with(density){52.dp.toPx()}
-    val shape=remember(top,radius,shoulder){androidx.compose.foundation.shape.GenericShape { size,_ ->
-        val mid=size.width/2f
-        moveTo(radius,top);lineTo(mid-shoulder,top)
-        cubicTo(mid-shoulder*.70f,top,mid-shoulder*.70f,0f,mid,0f)
-        cubicTo(mid+shoulder*.70f,0f,mid+shoulder*.70f,top,mid+shoulder,top)
-        lineTo(size.width-radius,top);quadraticBezierTo(size.width,top,size.width,top+radius)
-        lineTo(size.width,size.height-radius);quadraticBezierTo(size.width,size.height,size.width-radius,size.height)
-        lineTo(radius,size.height);quadraticBezierTo(0f,size.height,0f,size.height-radius)
-        lineTo(0f,top+radius);quadraticBezierTo(0f,top,radius,top);close()
-    }}
-    Box(Modifier.fillMaxWidth().padding(horizontal=12.dp,vertical=6.dp),contentAlignment=Alignment.Center) {
-        Box(Modifier.widthIn(max=600.dp).fillMaxWidth().height(totalHeight)) {
-            Surface(Modifier.fillMaxSize(),shape=shape,color=MaterialTheme.colorScheme.surfaceContainerHigh,shadowElevation=7.dp,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant.copy(alpha=.6f))) {}
-            Row(Modifier.fillMaxWidth().height(barHeight).align(Alignment.BottomCenter).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically) {
-                fun isCurrent(destination:String)=if(destination=="More") moreOpen || page in listOf("People Directory","Reports","Task Review","Top Performers","Settings & Accounts") else canonicalPage(page)==destination
-                for(index in 0..1) {
-                    val item=left.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
-                }
-                Spacer(Modifier.width(if(compact)64.dp else 78.dp))
-                for(index in 0..1) {
-                    val item=right.getOrNull(index)
-                    if(item==null)Spacer(Modifier.weight(1f)) else PreviewNavigationItem(item.second,item.third,isCurrent(item.first),Modifier.weight(1f),compact){if(item.first=="More")onMore() else onNavigate(item.first)}
-                }
-            }
-            Column(Modifier.align(Alignment.TopCenter).padding(top=4.dp),horizontalAlignment=Alignment.CenterHorizontally) {
-                Surface(onClick={
-                    motionJob?.cancel()
-                    motionJob=scope.launch {
-                        launch { scale.animateTo(.85f,tween(70));scale.animateTo(1.1f,spring(dampingRatio=.45f,stiffness=500f));scale.animateTo(1f,spring(dampingRatio=.55f,stiffness=550f)) }
-                        launch { rotation.animateTo(18f,tween(90));rotation.animateTo(-12f,tween(110));rotation.animateTo(0f,spring(dampingRatio=.5f,stiffness=450f)) }
-                        launch { lift.animateTo(-bump,tween(110));lift.animateTo(0f,spring(dampingRatio=.35f,stiffness=450f)) }
+internal fun PreviewBottomNavigation(page:String, moreOpen:Boolean, canOpen:(String)->Boolean, onMore:()->Unit, onNavigate:(String)->Unit) {
+    if (WindowInsets.ime.getBottom(LocalDensity.current) > 0) return
+    val compact = LocalConfiguration.current.screenHeightDp < 420
+    val primary = primaryNavigationPage(canOpen)
+    val destinations = navigationDestinations(canOpen)
+    val rows = if (LocalDensity.current.fontScale > 1.3f && LocalConfiguration.current.screenWidthDp < 600) destinations.chunked(3) else listOf(destinations)
+    Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), contentAlignment = Alignment.Center) {
+        Surface(Modifier.widthIn(max = 600.dp).fillMaxWidth(), shape = RoundedCornerShape(24.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh, shadowElevation = 3.dp,
+            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              rows.forEach { row ->
+               Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                row.forEach { item ->
+                    val selected = navigationSelected(item.page, page, moreOpen)
+                    val interaction = remember(item.page) { MutableInteractionSource() }
+                    val pressed by interaction.collectIsPressedAsState()
+                    val scale by animateFloatAsState(if (pressed) .96f else 1f, tween(120), label = "navigation press")
+                    Column(Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
+                        .testTag("nav-${item.page}")
+                        .selectable(selected = selected, interactionSource = interaction, indication = null, role = Role.Tab,
+                            onClick = { if (item.page == "More") onMore() else onNavigate(item.page) })
+                        .heightIn(min = 64.dp).padding(horizontal = 2.dp, vertical = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        val prominent = item.page == primary
+                        Surface(Modifier.size(if (prominent) if (compact) 46.dp else 54.dp else 36.dp)
+                            .graphicsLayer(scaleX = scale, scaleY = scale), shape = if (prominent) CircleShape else RoundedCornerShape(12.dp),
+                            color = if (selected && prominent) MaterialTheme.colorScheme.primary
+                                else if (selected) MaterialTheme.colorScheme.secondaryContainer
+                                else if (prominent) MaterialTheme.colorScheme.primaryContainer else Color.Transparent) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(MaterialSymbol(item.icon), null, Modifier.size(if (prominent) 26.dp else 22.dp),
+                                    tint = if (selected && prominent) MaterialTheme.colorScheme.onPrimary else if (selected || prominent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Text(item.label, style = MaterialTheme.typography.labelMedium, letterSpacing = 0.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     }
-                    onNavigate(primary)
-                },modifier=Modifier.size(buttonSize).graphicsLayer(scaleX=scale.value,scaleY=scale.value,rotationZ=rotation.value,translationY=lift.value).semantics{contentDescription=if(primary=="Manage Schedule")"Manage schedule" else primary;role=Role.Button},shape=CircleShape,color=MaterialTheme.colorScheme.primary,contentColor=MaterialTheme.colorScheme.onPrimary,shadowElevation=10.dp,border=androidx.compose.foundation.BorderStroke(4.dp,MaterialTheme.colorScheme.surfaceContainerHigh)) {
-                    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){Icon(MaterialSymbol(primaryIcon),null,Modifier.size(if(compact)26.dp else 31.dp))}
                 }
-                Text(primaryLabel,fontSize=if(compact)9.sp else 10.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurface,modifier=Modifier.padding(top=4.dp))
+               }
+              }
             }
         }
-    }
-}
-@Composable
-private fun PreviewNavigationItem(label:String,icon:String,selected:Boolean,modifier:Modifier,compact:Boolean,onClick:()->Unit) {
-    val scope=rememberCoroutineScope()
-    val scale=remember{Animatable(1f)}
-    val rotation=remember{Animatable(0f)}
-    var tapMotion by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
-    Column(
-        modifier.clip(RoundedCornerShape(14.dp))
-            .semantics { stateDescription = if (selected) "Selected" else "Not selected" }
-            .clickable {
-                tapMotion?.cancel()
-                tapMotion=scope.launch {
-                    launch {
-                        scale.animateTo(.78f,tween(65))
-                        scale.animateTo(1.13f,spring(dampingRatio=.42f,stiffness=520f))
-                        scale.animateTo(1f,spring(dampingRatio=.55f,stiffness=520f))
-                    }
-                    launch {
-                        rotation.animateTo(if(icon=="users-round")9f else -10f,tween(90))
-                        rotation.animateTo(if(icon=="users-round")-6f else 6f,tween(90))
-                        rotation.animateTo(0f,spring(dampingRatio=.5f,stiffness=500f))
-                    }
-                }
-                onClick()
-            }
-            .semantics{contentDescription=if(label=="More")"More navigation" else label;role=Role.Button}
-            .heightIn(min=48.dp).padding(vertical=5.dp),
-        horizontalAlignment=Alignment.CenterHorizontally,
-        verticalArrangement=Arrangement.spacedBy(3.dp)
-    ) {
-        Icon(
-            MaterialSymbol(icon),null,
-            Modifier.size(if(compact)21.dp else 24.dp)
-                .graphicsLayer(scaleX=scale.value,scaleY=scale.value,rotationZ=rotation.value),
-            if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(label,fontSize=if(compact)9.sp else 10.sp,fontWeight=if(selected)FontWeight.Bold else FontWeight.Normal,color=if(selected)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1,overflow=TextOverflow.Ellipsis)
-        Box(Modifier.size(4.dp).clip(CircleShape).background(if(selected)MaterialTheme.colorScheme.primary else Color.Transparent))
     }
 }
 
 @Composable
 private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: Float, error: String?, onUpdate: ()->Unit, onLater: ()->Unit) {
     val maxHeight = (LocalConfiguration.current.screenHeightDp * .85f).dp
-    Dialog(onDismissRequest={if(!downloading)onLater()}) {
+    SchedulerDialog(onDismissRequest={if(!downloading)onLater()}) {
         Card(Modifier.widthIn(max=480.dp).fillMaxWidth().heightIn(max=maxHeight),shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(24.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
@@ -875,30 +837,6 @@ private fun AppUpdateDialog(update: AppUpdate, downloading: Boolean, progress: F
                         Icon(MaterialSymbol("download"),null,Modifier.size(18.dp)); Spacer(Modifier.width(6.dp)); Text("Update")
                     }
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ScheduleShareSuccessDialog(onDismiss: () -> Unit) {
-    Dialog(onDismissRequest = onDismiss) {
-        Card(
-            Modifier.widthIn(max = 380.dp).fillMaxWidth(),
-            shape = RoundedCornerShape(28.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(
-                Modifier.fillMaxWidth().padding(24.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                    Icon(MaterialSymbol("check_circle"), null, Modifier.padding(16.dp).size(34.dp), MaterialTheme.colorScheme.onPrimaryContainer)
-                }
-                Text("Schedule shared successfully", fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                Text("Your schedule has been shared.", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-                Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) { Text("Done") }
             }
         }
     }
@@ -1017,7 +955,7 @@ private fun LoadingSplashScreen() {
         )
         Text(
             "SCHEDULE  ·  ORGANIZE  ·  SERVE",
-            fontSize = 10.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             letterSpacing = 1.1.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1062,7 +1000,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
                         Text("Create local workspace")
                     }
                 } else {
-                    OutlinedButton(onClick = { creating = true }, modifier = Modifier.fillMaxWidth().height(46.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
+                    OutlinedButton(onClick = { creating = true }, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
                         Icon(MaterialSymbol("database"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
                         Text("Set up local workspace")
@@ -1072,7 +1010,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Text("Shared sync", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Text("Sign in to a shared workspace to sync this congregation across devices. Your administrator provides the account.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, lineHeight = 18.sp)
-                FilledTonalButton(onClick = onShared, modifier = Modifier.fillMaxWidth().height(46.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
+                FilledTonalButton(onClick = onShared, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp), shape = RoundedCornerShape(13.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 9.dp)) {
                     Icon(MaterialSymbol("cloud"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Text("Connect shared workspace")
@@ -1080,7 +1018,7 @@ private fun WorkspaceModeScreen(onLocal: (String) -> Unit, onShared: () -> Unit)
 
             }
         }
-        Text("Local data stays on this device until you share a backup.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 14.dp))
+        Text("Local data stays on this device until you share a backup.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp))
     }
 }
 @Composable
@@ -1117,7 +1055,7 @@ private fun LoginScreen(loading: Boolean, error: String?, onLogin: (String, Stri
             Spacer(Modifier.width(7.dp))
             Text("Back to setup")
         }
-        Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        Text("Secure mobile sign-in", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
     }
 }
 
@@ -1145,7 +1083,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
         SyncStatusRow(store)
         Spacer(Modifier.height(18.dp))
         if (store.canOpenPage("Schedule Calendar")) { if (next != null) Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(19.dp), modifier = Modifier.fillMaxWidth().clickable { onOpenCalendar(null) }) {
-            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingTitle(next)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
+            Column(Modifier.padding(18.dp)) { Text("NEXT MEETING", color = MaterialTheme.colorScheme.onPrimary.copy(.75f), fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp); Text("${meetingTitle(next)} Meeting", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 19.sp, modifier = Modifier.padding(top = 8.dp)); Text("${friendlyDate(next.date)} · ${prettyTime(next.time)}", color = MaterialTheme.colorScheme.onPrimary.copy(.85f), fontSize = 12.sp, modifier = Modifier.padding(top = 5.dp)); Text("Open schedule  →", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 12.dp)) }
         } else EmptyCard("No upcoming meetings found.") }
         val shortcuts = when (store.user.value?.role) {
             "admin" -> listOf("Manage Schedule" to "calendar-check", "Task Review" to "clipboard-check", "Export Studio" to "file-down")
@@ -1165,7 +1103,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
                     ) {
                         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                             Icon(MaterialSymbol(icon), null, Modifier.size(21.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(destination, fontSize = 10.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
+                            Text(destination, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 5.dp))
                         }
                     }
                 }
@@ -1181,7 +1119,7 @@ private fun HomeScreen(store: AppStore, onGo: (String) -> Unit, onOpenCalendar: 
                 Text(if (store.user.value?.role == "admin") "$reviewable past assignments need review" else "Verified service this month", fontWeight = FontWeight.Bold, fontSize = 14.sp)
                 val reviewed = store.taskReviews.value.filter { it.status != "excused" }
                 val completedCount = reviewed.count { it.status == "completed" }
-                Text("$completedCount completed · ${store.month.value.format(DateTimeFormatter.ofPattern("MMMM yyyy"))}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                Text("$completedCount completed · ${store.month.value.format(DateTimeFormatter.ofPattern("MMMM yyyy"))}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
                 LinearProgressIndicator(progress = { if (reviewed.isEmpty()) 0f else completedCount.toFloat() / reviewed.size }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp).height(6.dp).clip(CircleShape), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.outlineVariant)
             }
         }
@@ -1247,7 +1185,7 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
         Column(Modifier.fillMaxWidth().padding(13.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Top performer", modifier = Modifier.weight(1f), fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text("Overall", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Overall", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             AnimatedContent(
                 targetState = department,
@@ -1269,10 +1207,10 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
                 Column(Modifier.fillMaxWidth()) {
                     Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { if (departmentIndex > 0) { swipeDirection = -1; department = options[departmentIndex - 1].first } }, enabled = departmentIndex > 0, modifier = Modifier.size(48.dp).semantics { contentDescription = "Previous department" }) { Icon(MaterialSymbol("chevron-left"), null, Modifier.size(20.dp)) }
-                        Text(label, Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Text(label, Modifier.weight(1f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         IconButton(onClick = { if (departmentIndex < options.lastIndex) { swipeDirection = 1; department = options[departmentIndex + 1].first } }, enabled = departmentIndex < options.lastIndex, modifier = Modifier.size(48.dp).semantics { contentDescription = "Next department" }) { Icon(MaterialSymbol("chevron-right"), null, Modifier.size(20.dp)) }
                     }
-                    Text("Swipe or use arrows to change department", Modifier.fillMaxWidth(), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                    Text("Swipe or use arrows to change department", Modifier.fillMaxWidth(), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                     val top = ranking.firstOrNull()
                     if (loadingOverall) {
                         Text("Loading review history…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 13.dp))
@@ -1286,7 +1224,7 @@ private fun TopPerformerCard(people: List<Person>, store: AppStore) {
                         }
                         Column(Modifier.weight(1f).padding(start = 10.dp)) {
                             Text(top.first.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                            Text("$label · ${top.second} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("$label · ${top.second} completed", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text("${top.third}%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
@@ -1306,11 +1244,11 @@ private fun timeGreeting(): String = when (LocalTime.now().hour) {
 private fun DepartmentMembersDialog(title: String, members: List<Person>, store: AppStore, onDismiss: () -> Unit) {
     val admin = store.user.value?.role == "admin"
     var editing by remember { mutableStateOf<Person?>(null) }
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(Modifier.fillMaxWidth(.92f).heightIn(max = 600.dp), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    SchedulerDialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(Modifier.fillMaxWidth().heightIn(max = 600.dp), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text("DEPARTMENT", fontSize = 9.sp, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold); Text("${members.size} active ${if (members.size == 1) "member" else "members"}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Column(Modifier.weight(1f)) { Text("DEPARTMENT", fontSize = 12.sp, letterSpacing = 1.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(title, fontSize = 19.sp, fontWeight = FontWeight.Bold); Text("${members.size} active ${if (members.size == 1) "member" else "members"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onDismiss) { Icon(MaterialSymbol("close"), "Close") }
                 }
                 HorizontalDivider(Modifier.padding(vertical = 8.dp), color = MaterialTheme.colorScheme.outlineVariant)
@@ -1320,8 +1258,8 @@ private fun DepartmentMembersDialog(title: String, members: List<Person>, store:
                         LaunchedEffect(person.id, person.avatarUpdatedAt) { if (person.avatarUpdatedAt != null) store.loadPersonPhoto(person.id) }
                         Row(Modifier.fillMaxWidth().clickable(enabled = admin) { editing = person }.padding(vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(person.name, 40.dp, store.personPhotos.value[person.id])
-                            Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(person.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp); Text("Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                            if (admin) Text("Edit", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(person.name, fontWeight = FontWeight.SemiBold, fontSize = 13.sp); Text("Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            if (admin) Text("Edit", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
                         }
                         if (person != members.last()) HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(.7f))
                     }
@@ -1389,7 +1327,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
             Column(Modifier.padding(horizontal = 10.dp, vertical = 12.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     listOf("SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT").forEach { day ->
-                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(day, fontSize = 9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(day, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
                 Spacer(Modifier.height(7.dp))
@@ -1424,7 +1362,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
         }
         Row(Modifier.padding(start = 5.dp, top = 9.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(7.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
-            Text("  Meeting scheduled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("  Meeting scheduled", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         selectedDate?.let { date ->
             val selectedMeetings = meetingsByDate[date].orEmpty()
@@ -1433,25 +1371,24 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                     Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
                         Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text(if (selectedMeetings.isEmpty()) "No meeting scheduled" else selectedMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                        Text(if (selectedMeetings.isEmpty()) "No meeting scheduled" else selectedMeetings.joinToString(" · ") { prettyTime(it.time) }, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                     }
-                    if (selectedMeetings.isNotEmpty()) TextButton(onClick = { modalDate = date }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("View", fontSize = 11.sp) }
+                    if (selectedMeetings.isNotEmpty()) TextButton(onClick = { modalDate = date }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) { Text("View", fontSize = 12.sp) }
                 }
             }
         } ?: Box(Modifier.fillMaxWidth().padding(top = 18.dp), contentAlignment = Alignment.Center) {
-            Text("Choose a date. Meeting dates are marked in green.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Choose a date. Meeting dates are marked in green.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         if (store.loading.value) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp))
     }
 
     modalDate?.let { date ->
         val dayMeetings = meetingsByDate[date].orEmpty()
-        Dialog(onDismissRequest = { modalDate = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing), contentAlignment = Alignment.Center) {
+        SchedulerDialog(onDismissRequest = { modalDate = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            BoxWithConstraints(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 val dialogMaxHeight = maxHeight
-                Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .55f)).clickable { modalDate = null })
                 Card(
-                    Modifier.fillMaxWidth(.94f).heightIn(max = maxHeight * .92f),
+                    Modifier.fillMaxWidth().heightIn(max = maxHeight * .92f),
                     shape = RoundedCornerShape(24.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                     border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -1460,7 +1397,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                         Row(Modifier.fillMaxWidth().padding(start = 18.dp, top = 12.dp, end = 9.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text(date.format(DateTimeFormatter.ofPattern("EEEE, MMMM d")), fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                                if (dayMeetings.isEmpty()) Text("No meetings", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                if (dayMeetings.isEmpty()) Text("No meetings", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                             }
                             IconButton(onClick = { modalDate = null }) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
@@ -1473,7 +1410,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                             Icon(MaterialSymbol("calendar-days"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                             Column(Modifier.weight(1f).padding(start = 9.dp)) {
                                                 Text("${meetingTitle(meeting)} Meeting", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                                Text(prettyTime(meeting.time), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                                                Text(prettyTime(meeting.time), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                             }
                                         }
                                         meeting.slots.forEachIndexed { index, slot ->
@@ -1483,7 +1420,7 @@ private fun ScheduleCalendarScreen(store: AppStore) {
                                                     Icon(MaterialSymbol(slotIcon(slot)), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
                                                 }
                                                 Column(Modifier.weight(1f).padding(start = 9.dp)) {
-                                                    Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text(slot.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                     Text(slot.name ?: "Unassigned", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 2.dp))
                                                 }
                                                 if (person != null) Avatar(person.name, 30.dp, store.personPhotos.value[person.id])
@@ -1549,12 +1486,12 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                     }, shape = RoundedCornerShape(13.dp), color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface, border = if (selected) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                         Row(Modifier.padding(horizontal = 11.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Icon(MaterialSymbol("calendar-days"), null, Modifier.size(15.dp), tint = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary)
-                            Text("${meetingTitle(meeting).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
-                            if (open > 0) Text("$open open", fontSize = 9.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                            Text("${meetingTitle(meeting).take(3)} ${LocalDate.parse(meeting.date).dayOfMonth}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface)
+                            if (open > 0) Text("$open open", fontSize = 12.sp, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                         }
                     }
                 }
-                if (rows.isEmpty()) Text("No meetings in this week", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(vertical = 8.dp))
+                if (rows.isEmpty()) Text("No meetings in this week", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -1568,8 +1505,8 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                         Icon(MaterialSymbol("filter"), null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("Open assignments", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                            Text("Show only unassigned positions", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Open assignments", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                            Text("Show only unassigned positions", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(
                             checked = openOnly,
@@ -1595,7 +1532,7 @@ private fun ScheduleScreen(store: AppStore, onAssign: (Meeting, Slot) -> Unit) {
                     Icon(MaterialSymbol("calendar-check"), null, Modifier.size(21.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text("$filled of ${weekSlots.size} assignments filled", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Text("$filled of ${weekSlots.size} assignments filled", fontWeight = FontWeight.Bold, fontSize = 12.sp)
                         LinearProgressIndicator(progress = { if (weekSlots.isEmpty()) 0f else filled.toFloat() / weekSlots.size }, modifier = Modifier.fillMaxWidth().padding(top = 5.dp).height(4.dp).clip(CircleShape), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.outlineVariant)
                     }
                 }
@@ -1651,9 +1588,9 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
                 Spacer(Modifier.width(9.dp))
                 Column(Modifier.weight(1f)) {
                     Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Text("${prettyTime(meeting.time)} · ${meeting.slots.count { it.isAssigned() }}/${meeting.slots.size} filled", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Text("${prettyTime(meeting.time)} · ${meeting.slots.count { it.isAssigned() }}/${meeting.slots.size} filled", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
-                if (open > 0) Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer) { Text("$open open", Modifier.padding(horizontal = 9.dp, vertical = 5.dp), fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
+                if (open > 0) Surface(shape = RoundedCornerShape(50), color = MaterialTheme.colorScheme.secondaryContainer) { Text("$open open", Modifier.padding(horizontal = 9.dp, vertical = 5.dp), fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold) }
                 Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-down"), null, Modifier.size(18.dp).rotate(if (expanded) 180f else 0f), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (expanded) visibleSlots.forEachIndexed { index, slot ->
@@ -1663,11 +1600,11 @@ private fun WeeklyMeetingCard(meeting: Meeting, expanded: Boolean, openOnly: Boo
                     }
                     Spacer(Modifier.width(9.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(slot.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text(slot.name ?: if (slot.isAssigned()) "Assigned member" else "Unassigned", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = if (slot.isAssigned()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 1.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (slot.locked) Icon(MaterialSymbol("lock-keyhole"), "Protected", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
-                    else if (canEdit(slot.department)) Text(if (!slot.isAssigned()) "Assign" else "Change", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 10.sp)
+                    else if (canEdit(slot.department)) Text(if (!slot.isAssigned()) "Assign" else "Change", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
                 }
                 if (index < visibleSlots.lastIndex) HorizontalDivider(Modifier.padding(start = 52.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
             }
@@ -1690,14 +1627,13 @@ private fun PeopleScreen(store: AppStore) {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text("DIRECTORY", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold)
-                Text("People Directory", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Text("${people.size} personnel", style = MaterialTheme.typography.titleMedium)
+                Text(workspaceGroupSummary(store.workspaceConfig?.groupCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (admin) FilledTonalButton(onClick = { editingPerson = null; editorOpen = true }, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
-                Icon(MaterialSymbol("user-plus"), null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add person", fontSize = 11.sp)
+                Icon(MaterialSymbol("user-plus"), null, Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add person", fontSize = 12.sp)
             }
         }
-        Text("${people.size} personnel · ${workspaceGroupSummary(store.workspaceConfig?.groupCount)}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
         OutlinedTextField(query, { query = it }, placeholder = { Text("Search people") }, leadingIcon = { Icon(MaterialSymbol("search"), null) }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), singleLine = true, shape = RoundedCornerShape(13.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(7.dp), modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 10.dp)) { listOf("All Status", "Active", "Inactive / unavailable").forEach { label -> FilterPill(label, filter == label) { filter = label } } }
         when {
@@ -1730,7 +1666,7 @@ private fun PeopleScreen(store: AppStore) {
 }
 
 @Composable
-private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
+internal fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Person?, photo: ImageBitmap?, completedTasks: List<TaskReview>, completedMonth: YearMonth, onDismiss: () -> Unit, onSave: suspend (Person) -> Unit, onDelete: suspend (String) -> Unit, onPhotoSelected: suspend (String, Uri) -> Unit, onRemovePhoto: suspend (String) -> Unit) {
     val isNew = person == null
     var name by remember(person?.id) { mutableStateOf(person?.name ?: "") }
     val groupCount = (localConfig?.groupCount ?: 0).coerceAtLeast(0)
@@ -1750,32 +1686,35 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null && person != null) scope.launch { photoBusy = true; try { onPhotoSelected(person.id, uri); photoError = null } catch (e: Exception) { photoError = e.message ?: "Could not upload photo." } finally { photoBusy = false } }
     }
-    Dialog(onDismissRequest = { if (!saving) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(Modifier.fillMaxWidth(.94f).heightIn(max = 680.dp), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
-            Column {
+    val scrollWholeForm = LocalConfiguration.current.screenHeightDp < 420 || LocalDensity.current.fontScale > 1.3f
+    val formScroll = rememberScrollState()
+    val fieldsScroll = rememberScrollState()
+    SchedulerDialog(onDismissRequest = { if (!saving) onDismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(Modifier.fillMaxWidth().heightIn(max = 680.dp), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+            Column(if (scrollWholeForm) Modifier.verticalScroll(formScroll) else Modifier) {
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(if (isNew) "NEW PERSON" else "PERSONNEL DETAILS", fontSize = 9.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                        Text(if (isNew) "NEW PERSON" else "PERSONNEL DETAILS", fontSize = 12.sp, letterSpacing = 1.1.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                         Text(if (isNew) "Add person" else "Personnel profile", fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 2.dp))
                     }
                     IconButton(onClick = onDismiss, enabled = !saving) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Column(Modifier.weight(1f, fill = false).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column((if (scrollWholeForm) Modifier else Modifier.weight(1f, fill = false).verticalScroll(fieldsScroll)).fillMaxWidth().padding(horizontal = 18.dp, vertical = 14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     if (!isNew) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Avatar(name, 56.dp, photo)
                             Column(Modifier.weight(1f).padding(start = 12.dp)) {
                                 Text("Profile photo", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Shown in department member lists", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    TextButton(onClick = { photoPicker.launch("image/*") }, enabled = !photoBusy) { Text(if (photo == null) "Add photo" else "Change photo", fontSize = 11.sp) }
-                                    if (photo != null) TextButton(onClick = { scope.launch { photoBusy = true; try { person?.let { onRemovePhoto(it.id) }; photoError = null } catch (e: Exception) { photoError = e.message ?: "Could not remove photo." } finally { photoBusy = false } } }, enabled = !photoBusy) { Text("Remove", fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+                                Text("Shown in department member lists", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(onClick = { photoPicker.launch("image/*") }, enabled = !photoBusy) { Text(if (photo == null) "Add photo" else "Change photo", fontSize = 12.sp) }
+                                    if (photo != null) TextButton(onClick = { scope.launch { photoBusy = true; try { person?.let { onRemovePhoto(it.id) }; photoError = null } catch (e: Exception) { photoError = e.message ?: "Could not remove photo." } finally { photoBusy = false } } }, enabled = !photoBusy) { Text("Remove", fontSize = 12.sp, color = MaterialTheme.colorScheme.error) }
                                 }
                             }
                             if (photoBusy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         }
-                        photoError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 10.sp) }
+                        photoError?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
                         if (completedTasks.isNotEmpty()) {
                             Card(
                                 shape = RoundedCornerShape(14.dp),
@@ -1786,17 +1725,17 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                         Icon(MaterialSymbol("award"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
                                             Text("Task history", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                            Text("All reviewed assignments", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text("All reviewed assignments", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                         Text(completedTasks.size.toString(), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                                     }
                                     completedTasks.take(4).forEach { task ->
                                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                            Text(task.slotKey.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase), modifier = Modifier.weight(1f), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface)
-                                            Text("${task.displayStatusFor(person?.id.orEmpty())} · ${friendlyDate(task.date)}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Text(task.slotKey.removePrefix("dept:").replace('_', ' ').replaceFirstChar(Char::uppercase), modifier = Modifier.weight(1f), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                                            Text("${task.displayStatusFor(person?.id.orEmpty())} · ${friendlyDate(task.date)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
-                                    if (completedTasks.size > 4) Text("+${completedTasks.size - 4} more history items", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                                    if (completedTasks.size > 4) Text("+${completedTasks.size - 4} more history items", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
                                 }
                             }
                         } else if (!isNew) {
@@ -1805,7 +1744,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                     Icon(MaterialSymbol("award"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
                                     Column(Modifier.weight(1f).padding(start = 8.dp)) {
                                         Text("Completed assignments", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                        Text("No reviewed tasks yet", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text("No reviewed tasks yet", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Text("0", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -1814,7 +1753,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                     }
                     OutlinedTextField(name, { name = it; error = null }, label = { Text("Full name") }, singleLine = true, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(13.dp))
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("GROUP", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("GROUP", fontSize = 12.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Surface(onClick = { if (groupCount > 0) groupPickerOpen = true }, shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Box(Modifier.size(36.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) {
@@ -1823,17 +1762,17 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
                                     Text(if(groupCount==0)"Groups not configured" else "Group $group", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(if(groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday, localConfig), fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(if(groupCount==0)"Configure groups in Workspace settings first." else groupAvailability(group, noThursday, localConfig), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 if(groupCount>0) {
-                                    Text("Change", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
+                                    Text("Change", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
                                     Spacer(Modifier.width(5.dp)); Icon(MaterialSymbol("chevron-right"), null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        Text("DEPARTMENTS & ROLES", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("DEPARTMENTS & ROLES", fontSize = 12.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         if (localConfig != null) {
                             localConfig.departments.filter { it.active }.forEach { dept ->
                                 val checked = when (dept.id) { "mic" -> mic; "av" -> audio || video; "attendant" -> platform; else -> dept.id in customDepartments }
@@ -1849,7 +1788,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("STATUS", fontSize = 10.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("STATUS", fontSize = 12.sp, letterSpacing = .9.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                             listOf("active" to "Active", "inactive" to "Inactive", "unavailable" to "Unavailable").forEach { (key, label) -> FilterPill(label, status == key) { status = key } }
                         }
@@ -1859,17 +1798,15 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                             PreferenceRow("event-busy", "Exempt from Thursday assignments", "Exclude from Thursday assignments") {
                                 Switch(checked = noThursday, onCheckedChange = { noThursday = it }, colors = appSwitchColors())
                             }
-                            Text("This exemption applies to every department.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+                            Text("This exemption applies to every department.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
                         }
                     }
-                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (!isNew) TextButton(onClick = { confirmDelete = true }, enabled = !saving) { Icon(MaterialSymbol("trash-2"), null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.error); Spacer(Modifier.width(4.dp)); Text("Delete", color = MaterialTheme.colorScheme.error, fontSize = 11.sp) }
-                    Spacer(Modifier.weight(1f))
+                FlowRow(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), horizontalArrangement = Arrangement.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (!isNew) TextButton(onClick = { confirmDelete = true }, enabled = !saving) { Icon(MaterialSymbol("trash-2"), null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.error); Spacer(Modifier.width(4.dp)); Text("Delete", color = MaterialTheme.colorScheme.error, fontSize = 12.sp) }
                     TextButton(onClick = onDismiss, enabled = !saving) { Text("Cancel", fontSize = 12.sp) }
-                    Spacer(Modifier.width(5.dp))
                     Button(onClick = {
                         val updated = Person(person?.id ?: "", name.trim(), group, status, noThursday, mic, audio, video, platform,
                             person?.gate ?: false, person?.remarks.orEmpty(), person?.allowDuplicate ?: false, person?.ignoreMeetingConflict ?: false,
@@ -1882,7 +1819,7 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
                             else -> { saving = true; error = null; scope.launch { try { onSave(updated); onDismiss() } catch (e: Exception) { error = e.message ?: "Could not save person." } finally { saving = false } } }
                         }
                     }, enabled = !saving, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 17.dp, vertical = 9.dp)) {
-                        if (saving) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp) else Text(if (isNew) "Add person" else "Save changes", fontSize = 11.sp)
+                        if (saving) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp) else Text(if (isNew) "Add person" else "Save changes", fontSize = 12.sp)
                     }
                 }
             }
@@ -1900,12 +1837,12 @@ private fun PersonEditorDialog(localConfig: LocalWorkspaceConfig?, person: Perso
 
 @Composable
 private fun GroupPickerDialog(selected: Int, groupCount: Int, onDismiss: () -> Unit, onSelect: (Int) -> Unit) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(Modifier.fillMaxWidth(.88f).heightIn(max=(LocalConfiguration.current.screenHeightDp*.85f).dp), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    SchedulerDialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(Modifier.fillMaxWidth().heightIn(max=(LocalConfiguration.current.screenHeightDp*.85f).dp), shape = RoundedCornerShape(23.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(18.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.size(40.dp).clip(RoundedCornerShape(13.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(MaterialSymbol("users-round"), null, Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary) }
-                    Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text("Choose a group", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Select the personnel’s group", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text("Choose a group", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Select the personnel’s group", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onDismiss) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 }
                 Spacer(Modifier.height(12.dp))
@@ -1924,7 +1861,7 @@ private fun GroupPickerDialog(selected: Int, groupCount: Int, onDismiss: () -> U
                         }
                     }
                 }
-                Text("Groups follow the current Workspace setup.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
+                Text("Groups follow the current Workspace setup.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 12.dp))
             }
         }
     }
@@ -1973,17 +1910,17 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp)) {
             Row(Modifier.fillMaxWidth().padding(bottom = 7.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onViewTopPerformers) { Icon(MaterialSymbol("trophy"), null, Modifier.size(17.dp)); Spacer(Modifier.width(5.dp)); Text("View top performers", fontSize = 11.sp) }
+                TextButton(onClick = onViewTopPerformers) { Icon(MaterialSymbol("trophy"), null, Modifier.size(17.dp)); Spacer(Modifier.width(5.dp)); Text("View top performers", fontSize = 12.sp) }
             }
             Surface(shape = RoundedCornerShape(15.dp), color = MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { weekStart = weekStart.minusDays(7) }) { Icon(MaterialSymbol("chevron-left"), "Previous week") }
-                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) { Text("WEEKLY REVIEW", fontSize = 9.sp, letterSpacing = .9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(weekLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+                    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) { Text("WEEKLY REVIEW", fontSize = 12.sp, letterSpacing = .9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant); Text(weekLabel, fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
                     val canAdvance = weekStart.plusDays(7) <= LocalDate.now()
                     IconButton(onClick = { if (canAdvance) weekStart = weekStart.plusDays(7) }, enabled = canAdvance) { Icon(MaterialSymbol("chevron-right"), "Next week") }
                 }
             }
-            Text("Review assignments for this week. Excused tasks are excluded from performance totals.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 9.dp))
+            Text("Review assignments for this week. Excused tasks are excluded from performance totals.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 9.dp))
         }
         if (loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading weekly review", "Checking assigned tasks and review status.") }
         else if (loadError) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Couldn’t load this week", "Check your connection, then retry the weekly review.", isError = true, actionLabel = "Try again", onAction = { refresh++ }) }
@@ -2003,7 +1940,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             Icon(MaterialSymbol("calendar-check"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                                 Text("${meetingTitle(meeting)}, ${friendlyDate(meeting.date)}", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${prettyTime(meeting.time)} · $reviewed/${assigned.size} reviewed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${prettyTime(meeting.time)} · $reviewed/${assigned.size} reviewed", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             Icon(MaterialSymbol(if (isExpanded) "chevron-up" else "chevron-down"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
@@ -2011,13 +1948,13 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             val review = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}"]
                             Row(Modifier.fillMaxWidth().clickable { selected = meeting to slot }.padding(horizontal = 13.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
-                                    Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    Text(slot.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     Text(slot.name ?: "Assigned personnel", fontSize = 12.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(top = 2.dp))
-                                    review?.substitutePersonName()?.let { substituteName -> Text("Substitute: $substituteName", fontSize = 9.sp, color = MaterialTheme.colorScheme.primary) }
+                                    review?.substitutePersonName()?.let { substituteName -> Text("Substitute: $substituteName", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary) }
                                 }
                                 val statusText = review?.displayStatus() ?: "Review"
                                 Surface(shape = RoundedCornerShape(50), color = if (review == null) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
-                                    Text(statusText, Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 10.sp, color = if (review == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
+                                    Text(statusText, Modifier.padding(horizontal = 10.dp, vertical = 6.dp), fontSize = 12.sp, color = if (review == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
                                 }
                             }
                             if (index != assigned.lastIndex) HorizontalDivider(Modifier.padding(start = 13.dp), color = MaterialTheme.colorScheme.outlineVariant)
@@ -2032,9 +1969,9 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
         LaunchedEffect(person?.id, person?.avatarUpdatedAt) { if (person?.avatarUpdatedAt != null) store.loadPersonPhoto(person.id) }
         val existingReview = statusBySlot["${meeting.date}|${meeting.type}|${slot.department}|${slot.key.removePrefix("dept:")}"]
         val currentStatus = existingReview?.status
-        Dialog(onDismissRequest = { selected = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        SchedulerDialog(onDismissRequest = { selected = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
             Card(
-                modifier = Modifier.fillMaxWidth(.92f).heightIn(max = 560.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(max = 560.dp),
                 shape = RoundedCornerShape(26.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -2046,7 +1983,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         }
                         Column(Modifier.weight(1f).padding(start = 12.dp)) {
                             Text("Review task", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                            Text("Select the task outcome", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Select the task outcome", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         IconButton(onClick = { selected = null }, modifier = Modifier.size(48.dp)) { Icon(MaterialSymbol("close"), "Close", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
@@ -2055,12 +1992,12 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                             Avatar(slot.name ?: "?", 44.dp, person?.let { store.personPhotos.value[it.id] })
                             Column(Modifier.weight(1f).padding(start = 11.dp)) {
                                 Text(slot.name ?: "Personnel", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
-                                Text(slot.label, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${prettyTime(meeting.time)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                                Text(slot.label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
-                    Text("TASK STATUS", fontSize = 9.sp, letterSpacing = 1.1.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+                    Text("TASK STATUS", fontSize = 12.sp, letterSpacing = 1.1.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
                     val options = listOf(
                         Triple("completed", "Completed", "The assigned task was fulfilled."),
                         Triple("not_completed", "Not completed", "The assigned task was not fulfilled."),
@@ -2094,7 +2031,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                                 }
                                 Column(Modifier.weight(1f).padding(start = 11.dp)) {
                                     Text(title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                    Text(description, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
+                                    Text(description, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 14.sp)
                                 }
                                 if (selectedStatus) Icon(MaterialSymbol("check"), "Current status", tint = accent, modifier = Modifier.size(18.dp))
                             }
@@ -2108,11 +2045,11 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
     substituteChoice?.let { (meeting, slot, status) ->
         // Substitute selection uses the full personnel directory, regardless of department eligibility or other assignments that day.
         val candidates = store.data.value?.people.orEmpty().filter { it.id != slot.personId }
-        Dialog(onDismissRequest = { substituteChoice = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Card(Modifier.fillMaxWidth(.9f).heightIn(max = 560.dp), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        SchedulerDialog(onDismissRequest = { substituteChoice = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Card(Modifier.fillMaxWidth().heightIn(max = 560.dp), shape = RoundedCornerShape(26.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(20.dp)) {
                     Text(if (status == "cancelled") "Who substituted?" else "Who covered this task?", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                    Text("${slot.name ?: "Assigned person"} · ${slot.label} · ${friendlyDate(meeting.date)}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
+                    Text("${slot.name ?: "Assigned person"} · ${slot.label} · ${friendlyDate(meeting.date)}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 12.dp))
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { selectedSubstituteId = null }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = selectedSubstituteId == null, onClick = { selectedSubstituteId = null })
                         Text("No substitute", fontSize = 13.sp)
@@ -2121,7 +2058,7 @@ private fun TaskReviewScreen(store: AppStore, onViewTopPerformers: () -> Unit, o
                         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable { selectedSubstituteId = candidate.id }.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             RadioButton(selected = selectedSubstituteId == candidate.id, onClick = { selectedSubstituteId = candidate.id })
                             Avatar(candidate.name, 38.dp, store.personPhotos.value[candidate.id])
-                            Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(candidate.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold); Text("Group ${candidate.group}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                            Column(Modifier.weight(1f).padding(start = 10.dp)) { Text(candidate.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold); Text("Group ${candidate.group}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                     }
                     Row(Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
@@ -2180,9 +2117,9 @@ private fun TopPerformersScreen(store: AppStore) {
         Column(Modifier.padding(horizontal = 18.dp, vertical = 10.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Spacer(Modifier.weight(1f))
-                if (store.user.value?.role == "admin") TextButton(onClick = { store.page.value = "Task Review" }) { Icon(MaterialSymbol("arrow-back"), null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Task Review", fontSize = 11.sp) }
+                if (store.user.value?.role == "admin") TextButton(onClick = { store.page.value = "Task Review" }) { Icon(MaterialSymbol("arrow-back"), null, Modifier.size(16.dp)); Spacer(Modifier.width(4.dp)); Text("Task Review", fontSize = 12.sp) }
             }
-            Text("Overall completed assignments rank personnel. Tap a name for recent task details; counts include older reviews and exclude excused tasks.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+            Text("Overall completed assignments rank personnel. Tap a name for recent task details; counts include older reviews and exclude excused tasks.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
         }
         if (loading) Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) { LoadingStatePanel("Loading performance", "Calculating completed assignments.") }
         else if (loadError != null) Box(Modifier.weight(1f).fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { StatePanel("cloud-off", "Performance isn’t available", loadError!!, isError = true, actionLabel = "Try again", onAction = { refresh++ }) }
@@ -2202,30 +2139,30 @@ private fun TopPerformersScreen(store: AppStore) {
                         Row(Modifier.fillMaxWidth().clickable { expandedPeople = if (expanded) expandedPeople - person.id else expandedPeople + person.id }.padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
                             Box(Modifier.size(46.dp), contentAlignment = Alignment.BottomEnd) {
                                 Avatar(person.name, 42.dp, store.personPhotos.value[person.id])
-                                if (rank <= 3) Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Text("$rank", color = MaterialTheme.colorScheme.onPrimary, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                if (rank <= 3) Box(Modifier.size(20.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) { Text("$rank", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
                             }
                             Column(Modifier.weight(1f).padding(start = 10.dp)) {
                                 Text(person.name, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Group ${person.group} · ${completedTasks.size} completed", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                                Text("Group ${person.group} · ${completedTasks.size} completed", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                 val rankLabel = when (rank) { 1 -> "1st place"; 2 -> "2nd place"; 3 -> "3rd place"; else -> if (needsSupport) "Needs support" else "Rank $rank" }
-                                Text(rankLabel, fontSize = 9.sp, color = if (needsSupport) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
+                                Text(rankLabel, fontSize = 12.sp, color = if (needsSupport) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.primary)
                             }
                             Text("$percent%", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                             Icon(MaterialSymbol(if (expanded) "chevron-up" else "chevron-down"), null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 5.dp))
                         }
                         if (expanded) {
-                            Text("RECENT TASKS · LAST 3 WEEKS", fontSize = 9.sp, letterSpacing = .8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 17.dp, top = 4.dp))
+                            Text("RECENT TASKS · LAST 3 WEEKS", fontSize = 12.sp, letterSpacing = .8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(start = 17.dp, top = 4.dp))
                             val detailRows = (completedTasks.map { it to "completed" } + missedTasks.map { it to "not_completed" })
                                 .filter { runCatching { LocalDate.parse(it.first.date) >= detailsStart }.getOrDefault(false) }
                                 .sortedByDescending { it.first.date }
-                            if (detailRows.isEmpty()) Text("No task activity in the last 3 weeks. Overall totals include older reviews.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(17.dp))
+                            if (detailRows.isEmpty()) Text("No task activity in the last 3 weeks. Overall totals include older reviews.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(17.dp))
                             detailRows.forEachIndexed { index, (task, status) ->
                                 Row(Modifier.fillMaxWidth().padding(start = 17.dp, end = 14.dp, top = 9.dp, bottom = 9.dp), verticalAlignment = Alignment.CenterVertically) {
                                     val done = status == "completed"
                                     Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Icon(MaterialSymbol(if (done) "circle-check" else "circle-x"), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp)) }
                                     Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                        Text(taskSlotLabel(task.slotKey), fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                                        Text("${deptLabel(task.department)} · ${meetingLabel(task.type)}, ${friendlyDate(task.date)} · ${if (done) "Completed" else "Not completed"}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                                        Text(taskSlotLabel(task.slotKey), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                        Text("${deptLabel(task.department)} · ${meetingLabel(task.type)}, ${friendlyDate(task.date)} · ${if (done) "Completed" else "Not completed"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                                     }
                                 }
                                 if (index != detailRows.lastIndex) HorizontalDivider(Modifier.padding(start = 58.dp), color = MaterialTheme.colorScheme.outlineVariant)
@@ -2255,8 +2192,8 @@ private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig
         }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
-        Text("INSIGHTS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Reports", fontSize = 23.sp, fontWeight = FontWeight.Bold)
-        Card(Modifier.padding(top = 14.dp), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("ROTATION", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp); Text("Schedule coverage", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)); Text("Current month", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Box(Modifier.size(70.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Text(if (slots.isEmpty()) "—" else "${filled*100/slots.size}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } } }
+        Text("INSIGHTS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Reports", fontSize = 23.sp, fontWeight = FontWeight.Bold)
+        Card(Modifier.padding(top = 14.dp), shape = RoundedCornerShape(18.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) { Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text("ROTATION", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, letterSpacing = 1.sp); Text("Schedule coverage", fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp)); Text("Current month", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }; Box(Modifier.size(70.dp).clip(CircleShape).background(MaterialTheme.colorScheme.secondaryContainer), contentAlignment = Alignment.Center) { Text(if (slots.isEmpty()) "—" else "${filled*100/slots.size}%", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) } } }
         Row(Modifier.padding(top = 12.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) { MetricCard("${meetings.size}", "Meetings", Modifier.weight(1f)); MetricCard("$filled", "Filled", Modifier.weight(1f)); MetricCard("${(slots.size-filled).coerceAtLeast(0)}", "Vacant", Modifier.weight(1f)) }
         if (departmentCoverage.isNotEmpty()) {
             Text("Department Coverage", fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 22.dp, bottom = 8.dp))
@@ -2265,22 +2202,20 @@ private fun ReportsScreen(data: ScheduleData?, localConfig: LocalWorkspaceConfig
                 RowCard("chart", label, "${group.count { it.name!=null }} of ${group.size} positions filled", "${(group.size-group.count { it.name!=null }).coerceAtLeast(0)} vacant") {}
             }
         }
-        Text("Full rotation fairness reports are available in the web workspace.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp, modifier = Modifier.padding(top = 14.dp))
+        Text("Full rotation fairness reports are available in the web workspace.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp))
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
+private fun ExportScreen(store: AppStore) {
     val context = LocalContext.current
-    val previewMaxHeight = (LocalConfiguration.current.screenHeightDp * 0.58f).coerceIn(300f, 520f).dp
     val scope = rememberCoroutineScope()
     var month by remember { mutableStateOf(store.month.value) }
     val initialMonth = remember { store.month.value }
     var selectedWeek by remember(month) { mutableStateOf(exportWeeks(month).firstOrNull { LocalDate.now() in it.first..it.second }?.first ?: firstExportWeek(month)) }
     var exportData by remember(month) { mutableStateOf(if (month == initialMonth) store.data.value else null) }
     var loadError by remember { mutableStateOf<String?>(null) }
-    var zoom by remember { mutableFloatStateOf(1f) }
     var weekPickerOpen by remember { mutableStateOf(false) }
     var monthPickerOpen by remember { mutableStateOf(false) }
     val weeks = remember(month) { exportWeeks(month) }
@@ -2301,17 +2236,16 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
     val poster by key(congregation, selectedMeetings, period, posterDepartments) {
         produceState<Bitmap?>(null) {
             try {
-                value = withContext(Dispatchers.Default) { renderSchedulePoster(congregation, selectedMeetings, period, posterDepartments) }
+                value = withContext(Dispatchers.Default) { renderSchedulePoster(context, congregation, selectedMeetings, period, posterDepartments) }
             } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
             catch (e: Exception) { loadError = e.message ?: "Could not render schedule image." }
         }
     }
-    val transform = rememberTransformableState { zoomChange, _, _ -> zoom = (zoom * zoomChange).coerceIn(1f, 3f) }
     Column(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text("EXPORT SCHEDULE", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 9.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Weekly Card", fontSize = 21.sp, fontWeight = FontWeight.Bold) }
-                Text("PNG · 1080 px", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
+                Column(Modifier.weight(1f)) { Text("EXPORT SCHEDULE", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, letterSpacing = 1.2.sp, fontWeight = FontWeight.Bold); Text("Weekly Card", fontSize = 21.sp, fontWeight = FontWeight.Bold) }
+                Text("PNG · 1080 px", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.SemiBold)
             }
             val selectedWeekNumber = (weeks.indexOfFirst { it.first == selectedWeek } + 1).coerceAtLeast(1)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2330,31 +2264,8 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
                     onClick = { weekPickerOpen = true }
                 )
             }
-            if (!loadError.isNullOrBlank()) Text(loadError!!, color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) { Text("Preview", fontSize = 14.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Text("1080 px portrait", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-            Text("Pinch to zoom · ${((zoom * 100).toInt())}%", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            // Keep the poster inside a predictable viewport on short landscape screens.
-            // Pan gestures were previously consumed by transformable even though pan was
-            // ignored, preventing the surrounding page from receiving vertical scrolls.
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 150.dp, max = previewMaxHeight)
-                    .clip(RoundedCornerShape(12.dp)),
-                contentAlignment = Alignment.Center
-            ) {
-                val preview = poster
-                if (preview == null) CircularProgressIndicator() else Image(
-                    preview.asImageBitmap(),
-                    contentDescription = "Schedule poster preview",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = previewMaxHeight)
-                        .graphicsLayer(scaleX = zoom, scaleY = zoom)
-                        .transformable(transform, canPan = { false }),
-                    contentScale = ContentScale.Fit
-                )
-            }
+            if (!loadError.isNullOrBlank()) Text(loadError!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+            SchedulePosterPreview(poster, Modifier.fillMaxWidth())
         }
         Surface(tonalElevation = 2.dp, color = MaterialTheme.colorScheme.background) {
             Button(onClick = {
@@ -2369,25 +2280,24 @@ private fun ExportScreen(store: AppStore, onShareLaunched: () -> Unit) {
                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         }
                         context.startActivity(Intent.createChooser(send, "Share schedule"))
-                        onShareLaunched()
                     } catch (e: Exception) {
                         android.widget.Toast.makeText(context, e.message ?: "Could not prepare schedule image.", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
-            }, enabled = poster != null && selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).height(54.dp), shape = RoundedCornerShape(16.dp)) {
-                Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Spacer(Modifier.weight(1f)); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
+            }, enabled = poster != null && selectedMeetings.isNotEmpty() && loadError == null, modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp).heightIn(min = 54.dp), shape = RoundedCornerShape(16.dp)) {
+                Icon(MaterialSymbol("share-2"), null, Modifier.size(22.dp), tint = MaterialTheme.colorScheme.onPrimary); Spacer(Modifier.width(10.dp)); Text("Share schedule", modifier = Modifier.weight(1f), fontSize = 15.sp, fontWeight = FontWeight.SemiBold); Icon(MaterialSymbol("chevron-right"), null, tint = MaterialTheme.colorScheme.onPrimary)
             }
         }
     }
     if (monthPickerOpen) ExportMonthPickerDialog(month, onDismiss = { monthPickerOpen = false }, onSelect = { month = it; monthPickerOpen = false })
-    if (weekPickerOpen) WeekPickerDialog(month, weeks, selectedWeek, onDismiss = { weekPickerOpen = false }, onSelect = { selectedWeek = it; zoom = 1f; weekPickerOpen = false })
+    if (weekPickerOpen) WeekPickerDialog(month, weeks, selectedWeek, onDismiss = { weekPickerOpen = false }, onSelect = { selectedWeek = it; weekPickerOpen = false })
 }
 
 @Composable
 private fun ExportPickerField(modifier: Modifier = Modifier, label: String, value: String, icon: String?, onClick: () -> Unit) {
     Surface(
         onClick = onClick,
-        modifier = modifier.height(54.dp),
+        modifier = modifier.heightIn(min = 54.dp),
         shape = RoundedCornerShape(14.dp),
         color = MaterialTheme.colorScheme.surface,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
@@ -2398,8 +2308,8 @@ private fun ExportPickerField(modifier: Modifier = Modifier, label: String, valu
                 Spacer(Modifier.width(8.dp))
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
-                Text(label, fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium, maxLines = 1)
-                Text(value, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, fontWeight = FontWeight.Medium, maxLines = 1)
+                Text(value, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Spacer(Modifier.width(4.dp))
             Icon(MaterialSymbol("chevron-down"), "Choose $label", tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
@@ -2411,7 +2321,7 @@ private fun ExportPickerField(modifier: Modifier = Modifier, label: String, valu
 private fun ExportMonthPickerDialog(month: YearMonth, onDismiss: () -> Unit, onSelect: (YearMonth) -> Unit) {
     var year by remember(month) { mutableIntStateOf(month.year) }
     val months = (1..12).map { YearMonth.of(year, it) }
-    Dialog(onDismissRequest = onDismiss) {
+    SchedulerDialog(onDismissRequest = onDismiss) {
         Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(18.dp)) {
                 Text("Choose month", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
@@ -2425,7 +2335,7 @@ private fun ExportMonthPickerDialog(month: YearMonth, onDismiss: () -> Unit, onS
                         rowMonths.forEach { option ->
                             val selected = option == month
                             Surface(onClick = { onSelect(option) }, modifier = Modifier.weight(1f).padding(bottom = 7.dp).height(42.dp), shape = RoundedCornerShape(11.dp), color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant)) {
-                                Box(contentAlignment = Alignment.Center) { Text(option.format(DateTimeFormatter.ofPattern("MMM")), fontSize = 11.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) }
+                                Box(contentAlignment = Alignment.Center) { Text(option.format(DateTimeFormatter.ofPattern("MMM")), fontSize = 12.sp, fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium, color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface) }
                             }
                         }
                     }
@@ -2438,18 +2348,18 @@ private fun ExportMonthPickerDialog(month: YearMonth, onDismiss: () -> Unit, onS
 
 @Composable
 private fun WeekPickerDialog(month: YearMonth, weeks: List<Pair<LocalDate, LocalDate>>, selected: LocalDate, onDismiss: () -> Unit, onSelect: (LocalDate) -> Unit) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Card(Modifier.fillMaxWidth(.9f), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
+    SchedulerDialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {
             Column(Modifier.padding(16.dp)) {
                 Text("Choose a week", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy")), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
+                Text(month.format(DateTimeFormatter.ofPattern("MMMM yyyy")), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp, bottom = 12.dp))
                 weeks.forEachIndexed { index, range ->
                     val active = range.first == selected
                     Surface(onClick = { onSelect(range.first) }, modifier = Modifier.fillMaxWidth().padding(bottom = 7.dp), shape = RoundedCornerShape(12.dp), color = if (active) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant, border = androidx.compose.foundation.BorderStroke(1.dp, if (active) MaterialTheme.colorScheme.primary.copy(alpha = .4f) else MaterialTheme.colorScheme.outlineVariant)) {
                         Row(Modifier.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("Week ${index + 1}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                Text("${range.first.format(DateTimeFormatter.ofPattern("MMM d"))} – ${range.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("${range.first.format(DateTimeFormatter.ofPattern("MMM d"))} – ${range.second.format(DateTimeFormatter.ofPattern("MMM d, yyyy"))}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             if (active) Icon(MaterialSymbol("check"), "Selected week", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                         }
@@ -2473,7 +2383,7 @@ private fun firstExportWeek(month: YearMonth): LocalDate {
     return first.minusDays((first.dayOfWeek.value - 1).toLong())
 }
 
-private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, period: String, departments: List<Pair<String,String>>): Bitmap {
+private fun renderSchedulePoster(context: android.content.Context, congregation: String, meetings: List<Meeting>, period: String, departments: List<Pair<String,String>>): Bitmap {
     val width = 1080
     val margin = 62f
     val headerHeight = 295f
@@ -2506,7 +2416,7 @@ private fun renderSchedulePoster(congregation: String, meetings: List<Meeting>, 
         7 to android.graphics.Color.rgb(156, 126, 52)   // Sunday · ochre
     )
     canvas.drawColor(cream)
-    fun p(color: Int, size: Float, bold: Boolean = false) = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = size; typeface = android.graphics.Typeface.create("sans-serif${if (bold) "-medium" else ""}", if (bold) android.graphics.Typeface.BOLD else android.graphics.Typeface.NORMAL) }
+    fun p(color: Int, size: Float, bold: Boolean = false) = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; textSize = size; typeface = ResourcesCompat.getFont(context, if (bold) R.font.google_sans_bold else R.font.google_sans_regular) }
     val kicker = p(muted, 22f, true); kicker.letterSpacing = .12f
     val title = p(ink, 43f, true)
     val section = p(teal, 23f, true); section.letterSpacing = .12f
@@ -2595,7 +2505,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
     var localConfigDialog by remember { mutableStateOf(false) }
     var sharedSyncInfo by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
-        Text("Settings & Accounts", fontSize = 23.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 12.dp))
+        Text("Workspace preferences", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 12.dp))
         if (!store.localMode) TaskNotificationSettings(store, scope, snackbar)
         if (store.user.value?.role != "viewer") SettingSection("Data & Backup", if (store.localMode) "Local workspace · stored on this device" else "Shared workspace · syncs through your congregation account", "database", expanded=="data", { expanded=if(expanded=="data")null else "data" }) {
             Text(if (store.localMode) "Your schedules, personnel, reviews, and profile photos stay on this device. Save a backup before changing phones." else "This congregation uses a shared online workspace. Sign in on another device to access the same schedule." , fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, lineHeight=18.sp)
@@ -2615,23 +2525,23 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                     Icon(MaterialSymbol("file-down"),null,Modifier.size(17.dp)); Spacer(Modifier.width(7.dp))
                     Text(if(backup.folderName==null) "Choose backup folder" else "Change backup folder")
                 }
-                backup.lastSaved?.let { Text("Last saved: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
-                backup.error?.let { Text("Backup issue: $it",fontSize=10.sp,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=4.dp)) }
+                backup.lastSaved?.let { Text("Last saved: $it",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=4.dp)) }
+                backup.error?.let { Text("Backup issue: $it",fontSize=12.sp,color=MaterialTheme.colorScheme.error,modifier=Modifier.padding(top=4.dp)) }
                 TextButton(onClick={ sharedSyncInfo=true }, modifier=Modifier.align(Alignment.End)) { Text("Use shared sync") }
             } else {
-                Text("Optional sync is enabled for this shared workspace.", fontSize=11.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
+                Text("Optional sync is enabled for this shared workspace.", fontSize=12.sp, color=MaterialTheme.colorScheme.primary, modifier=Modifier.padding(top=10.dp))
             }
         }
         if (store.user.value?.role != "viewer") SettingSection("Workspace", "${store.data.value?.settings?.name ?: "Congregation"} · Meeting times", "building-2", expanded == "workspace", { expanded = if (expanded=="workspace") null else "workspace" }) {
             OutlinedTextField(name, { name=it }, label={Text("Congregation Name")}, modifier=Modifier.fillMaxWidth(), singleLine=true)
             Spacer(Modifier.height(8.dp))
-            Text("Manage meeting days, times, groups, departments, and roles in workspace setup below.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
-            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null; snackbar.showSnackbar("Workspace settings saved.") } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace settings.") } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).height(44.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
+            Text("Manage meeting days, times, groups, departments, and roles in workspace setup below.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(onClick={ scope.launch { try { store.saveWorkspace(WorkspaceSettings(name,thu,sat,sun)); expanded=null; snackbar.showSnackbar("Workspace settings saved.") } catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not save workspace settings.") } } }, modifier=Modifier.fillMaxWidth().padding(top=10.dp).heightIn(min = 48.dp), contentPadding=PaddingValues(horizontal=16.dp, vertical=8.dp)) { Text("Save Changes") }
             if (admin) {
-                OutlinedButton(onClick={ localConfigDialog=true }, modifier=Modifier.fillMaxWidth().padding(top=8.dp).height(44.dp), shape=RoundedCornerShape(12.dp)) {
+                OutlinedButton(onClick={ localConfigDialog=true }, modifier=Modifier.fillMaxWidth().padding(top=8.dp).heightIn(min = 48.dp), shape=RoundedCornerShape(12.dp)) {
                     Icon(MaterialSymbol("tune"), null, Modifier.size(17.dp)); Spacer(Modifier.width(7.dp)); Text("Groups, departments & meetings")
                 }
-                Text(if (store.localMode) "Customize groups, departments, roles, and meeting times for this device." else "Customize groups, departments, roles, and meeting times for the shared congregation.", fontSize=10.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
+                Text(if (store.localMode) "Customize groups, departments, roles, and meeting times for this device." else "Customize groups, departments, roles, and meeting times for the shared congregation.", fontSize=12.sp, color=MaterialTheme.colorScheme.onSurfaceVariant, modifier=Modifier.padding(top=6.dp))
             }
         }
         if (admin && !store.localMode) SettingSection("Accounts & Access", "Manage roles and permissions", "users-round", expanded=="accounts", { expanded=if(expanded=="accounts")null else "accounts" }) {
@@ -2661,14 +2571,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                             }
                             Spacer(Modifier.height(8.dp))
                             Text(account.displayName,fontSize=12.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
-                            Text(roleLabel(account.role),fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
-                            Text(if(account.active)"Active" else "Disabled",fontSize=9.sp,color=if(account.active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
+                            Text(roleLabel(account.role),fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,maxLines=1)
+                            Text(if(account.active)"Active" else "Disabled",fontSize=12.sp,color=if(account.active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                         }
                     }
                 }
             }
             selectedAccount?.let { account ->
-                Dialog(onDismissRequest={selectedAccount=null}) {
+                SchedulerDialog(onDismissRequest={selectedAccount=null}) {
                     Card(shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
                         Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                             Row(verticalAlignment=Alignment.CenterVertically) {
@@ -2693,7 +2603,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                                             try { store.setRole(account,role); selectedAccount=null; snackbar.showSnackbar("Role changed to $label.") }
                                             catch(e:Exception) { snackbar.showSnackbar(e.message ?: "Could not change role.") }
                                         }
-                                    },label={Text(label,fontSize=10.sp)})
+                                    },label={Text(label,fontSize=12.sp)})
                                 }
                             }
                             if(account.role!="admin") {
@@ -2737,7 +2647,7 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 Switch(checked=appLock.enabled,onCheckedChange=appLock::changeEnabled,enabled=!appLock.busy,colors=appSwitchColors())
             }
             TextButton(onClick=appLock::openSecuritySettings,enabled=!appLock.busy,contentPadding=PaddingValues(horizontal=2.dp,vertical=4.dp)) {
-                Icon(MaterialSymbol("settings"),null,Modifier.size(17.dp));Spacer(Modifier.width(6.dp));Text("Phone security settings",fontSize=11.sp)
+                Icon(MaterialSymbol("settings"),null,Modifier.size(17.dp));Spacer(Modifier.width(6.dp));Text("Phone security settings",fontSize=12.sp)
             }
             HorizontalDivider(Modifier.padding(vertical=4.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.65f))
             PreferenceRow(icon = if (store.dark.value) "moon" else "sun", title = "Dark appearance", subtitle = if (store.dark.value) "On · Easier viewing in low light" else "Off · Using light colors") {
@@ -2750,14 +2660,14 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 Slider(value = store.fontScale.value, onValueChange = store::setFontScale, valueRange = .85f..1.30f, steps = 8, modifier = Modifier.weight(1f))
                 IconButton(onClick = { store.setFontScale(store.fontScale.value + .05f) }, enabled = store.fontScale.value < 1.30f) { Text("A+", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
             }
-            Text("Adjusts text throughout the app.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Adjusts text throughout the app.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
-            PreferenceRow(icon = if (store.localMode || store.online.value) "cloud-done" else "cloud-off", title = if (store.localMode) "Local workspace" else "Workspace connection", subtitle = if (store.localMode) "Schedules are stored on this device." else if (store.online.value) "Internet connection is available; workspace updates sync when loaded." else "Offline · last successful sync ${syncTimeLabel(store.lastSyncedAt.value) ?: "not recorded"}.") { Text(if (store.localMode) "LOCAL" else if (store.online.value) "ONLINE" else "OFFLINE", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = if (!store.localMode && !store.online.value) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) }
+            PreferenceRow(icon = if (store.localMode || store.online.value) "cloud-done" else "cloud-off", title = if (store.localMode) "Local workspace" else "Workspace connection", subtitle = if (store.localMode) "Schedules are stored on this device." else if (store.online.value) "Internet connection is available; workspace updates sync when loaded." else "Offline · last successful sync ${syncTimeLabel(store.lastSyncedAt.value) ?: "not recorded"}.") { Text(if (store.localMode) "LOCAL" else if (store.online.value) "ONLINE" else "OFFLINE", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = if (!store.localMode && !store.online.value) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary) }
             Card(Modifier.fillMaxWidth().padding(top = 10.dp), shape = RoundedCornerShape(13.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
-                    Text("APP INFORMATION", fontSize = 9.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("APP INFORMATION", fontSize = 12.sp, letterSpacing = 1.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("Version ${BuildConfig.VERSION_NAME}", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 5.dp))
-                    Text(if (store.localMode) "Local administrator · This device" else "Signed in as ${store.user.value?.username ?: "—"}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
+                    Text(if (store.localMode) "Local administrator · This device" else "Signed in as ${store.user.value?.username ?: "—"}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 2.dp))
                 }
             }
             val context = LocalContext.current
@@ -2803,26 +2713,26 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups:
     var newMeetingTime by remember { mutableStateOf("") }
     val context=LocalContext.current
     val scroll=rememberScrollState()
-    Dialog(onDismissRequest=onDismiss, properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        Surface(Modifier.fillMaxWidth(.94f).widthIn(max=520.dp).fillMaxHeight(.88f), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
+    SchedulerDialog(onDismissRequest=onDismiss, properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        Surface(Modifier.fillMaxWidth().heightIn(max=720.dp), shape=RoundedCornerShape(24.dp), color=MaterialTheme.colorScheme.surface, border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant)) {
             Column {
                 Row(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=13.dp),verticalAlignment=Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text(workspaceLabel,fontSize=9.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
+                    Column(Modifier.weight(1f)) { Text(workspaceLabel,fontSize=12.sp,letterSpacing=1.sp,color=MaterialTheme.colorScheme.primary,fontWeight=FontWeight.Bold); Text("Congregation setup",fontSize=19.sp,fontWeight=FontWeight.Bold) }
                     IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close")}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.weight(1f).verticalScroll(scroll).padding(horizontal=18.dp,vertical=14.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-                    Text("GROUPS",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("GROUPS",fontSize=12.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
                         Text("Number of groups",Modifier.weight(1f),fontSize=13.sp)
                         OutlinedButton(onClick={if(groupCount>0)groupCount--},enabled=groupCount>0,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("−")}
                         Text(if(groupCount==0)"—" else groupCount.toString(),fontSize=16.sp,fontWeight=FontWeight.Bold)
                         OutlinedButton(onClick={if(groupCount<maxGroups)groupCount++},enabled=groupCount<maxGroups,shape=RoundedCornerShape(10.dp),contentPadding=PaddingValues(horizontal=13.dp,vertical=6.dp)){Text("+")}
                     }
-                    Text(if(groupCount==0)"No groups configured yet. Add the number your congregation uses." else "$groupCount numbered groups are available for personnel and meeting eligibility.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if(groupCount==0)"No groups configured yet. Add the number your congregation uses." else "$groupCount numbered groups are available for personnel and meeting eligibility.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                    Text("DEPARTMENTS & ROLES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    if(departments.isEmpty()) Text("No departments yet. Add one below, then add the assignment roles it needs.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("DEPARTMENTS & ROLES",fontSize=12.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(departments.isEmpty()) Text("No departments yet. Add one below, then add the assignment roles it needs.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     departments.forEachIndexed { index, dept ->
                         Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
                             Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
@@ -2839,7 +2749,7 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups:
                                     }
                                 }
                                 TextButton(onClick={ val role=LocalAssignmentRole("role_${System.currentTimeMillis()}",""); departments=departments.toMutableList().also { it[index]=dept.copy(roles=dept.roles+role) } }) { Icon(MaterialSymbol("add"),null,Modifier.size(16.dp)); Spacer(Modifier.width(5.dp)); Text("Add role") }
-                                if(!dept.active) Text("Archived for new schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                if(!dept.active) Text("Archived for new schedules",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -2848,8 +2758,8 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups:
                         FilledTonalButton(onClick={ val label=newDepartment.trim(); if(label.isNotBlank()){ val id="dept_${System.currentTimeMillis()}"; departments=departments+LocalDepartment(id,label,emptyList()); newDepartment="" } },shape=RoundedCornerShape(11.dp)){Text("Add")}
                     }
                     HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                    Text("MEETING DAYS & TIMES",fontSize=10.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
-                    if(meetings.isEmpty()) Text("No meetings yet. Add a meeting below and choose its day and time.",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("MEETING DAYS & TIMES",fontSize=12.sp,letterSpacing=.8.sp,fontWeight=FontWeight.Bold,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    if(meetings.isEmpty()) Text("No meetings yet. Add a meeting below and choose its day and time.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     meetings.forEachIndexed { index, meeting ->
                         Card(shape=RoundedCornerShape(14.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surfaceVariant.copy(alpha=.55f))) {
                             Column(Modifier.fillMaxWidth().padding(10.dp),verticalArrangement=Arrangement.spacedBy(7.dp)) {
@@ -2866,14 +2776,14 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups:
                                     }
                                     TimeInput(meeting.time){ t->meetings=meetings.toMutableList().also { it[index]=meeting.copy(time=t) } }
                                 }
-                                Text("Eligible groups",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text("Eligible groups",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(5.dp)) {
                                     (1..groupCount).forEach { g ->
                                         val enabled=g in meeting.eligibleGroups
                                         FilterPill(g.toString(),enabled){ meetings=meetings.toMutableList().also { it[index]=meeting.copy(eligibleGroups=if(enabled)meeting.eligibleGroups-g else meeting.eligibleGroups+g) } }
                                     }
                                 }
-                                if(!meeting.active) Text("Archived from future schedules",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                                if(!meeting.active) Text("Archived from future schedules",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -2897,8 +2807,8 @@ private fun LocalWorkspaceConfigDialog(initial: LocalWorkspaceConfig, maxGroups:
                             }
                         },shape=RoundedCornerShape(11.dp)){Text("Add")}
                     }
-                    error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=11.sp) }
-                    Text("Archived departments and removed meetings stop appearing in new schedules. Existing saved assignments remain in the local backup.",fontSize=10.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,lineHeight=15.sp)
+                    error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=12.sp) }
+                    Text("Archived departments and removed meetings stop appearing in new schedules. Existing saved assignments remain in the local backup.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,lineHeight=15.sp)
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 Row(Modifier.fillMaxWidth().padding(horizontal=14.dp,vertical=10.dp),horizontalArrangement=Arrangement.End,verticalAlignment=Alignment.CenterVertically) {
@@ -2924,7 +2834,7 @@ private fun GenerateDialogContent(onConfirm: () -> Unit) { Text("Review the gene
 private fun SettingSection(title: String, subtitle: String, icon: String, open: Boolean, onClick: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Card(shape=RoundedCornerShape(16.dp), colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface), border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant), modifier=Modifier.fillMaxWidth().padding(bottom=9.dp)) {
         Column {
-            Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(13.dp), verticalAlignment=Alignment.CenterVertically) { Box(Modifier.size(36.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))}; Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=13.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=10.sp,modifier=Modifier.padding(top=3.dp),maxLines=1,overflow=TextOverflow.Ellipsis)};Icon(MaterialSymbol(if(open)"chevron-down" else "chevron-right"),null,tint=MaterialTheme.colorScheme.onSurfaceVariant) }
+            Row(Modifier.fillMaxWidth().clickable { onClick() }.padding(13.dp), verticalAlignment=Alignment.CenterVertically) { Box(Modifier.size(36.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))}; Spacer(Modifier.width(11.dp)); Column(Modifier.weight(1f)){Text(title,fontWeight=FontWeight.SemiBold,fontSize=13.sp);Text(subtitle,color=MaterialTheme.colorScheme.onSurfaceVariant,fontSize=12.sp,modifier=Modifier.padding(top=3.dp),maxLines=1,overflow=TextOverflow.Ellipsis)};Icon(MaterialSymbol(if(open)"chevron-down" else "chevron-right"),null,tint=MaterialTheme.colorScheme.onSurfaceVariant) }
             if(open) Column(Modifier.padding(start=14.dp,end=14.dp,bottom=14.dp),content=content)
         }
     }
@@ -3019,24 +2929,24 @@ private fun ProfileDialog(
 private fun AssignmentPickerDialog(meeting:Meeting,slot:Slot,candidates:List<Person>,onDismiss:()->Unit,onSelect:(Person?)->Unit){
     var query by remember { mutableStateOf("") }
     val filtered=candidates.filter { it.name.contains(query.trim(),ignoreCase=true) }
-    Dialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
-        Surface(Modifier.fillMaxWidth(.94f).widthIn(max=440.dp).fillMaxHeight(.84f).heightIn(max=620.dp),shape=RoundedCornerShape(26.dp),color=MaterialTheme.colorScheme.surface,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),tonalElevation=8.dp) {
+    SchedulerDialog(onDismissRequest=onDismiss,properties=DialogProperties(usePlatformDefaultWidth=false)) {
+        Surface(Modifier.fillMaxWidth().heightIn(max=620.dp),shape=RoundedCornerShape(26.dp),color=MaterialTheme.colorScheme.surface,border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant),tonalElevation=8.dp) {
             Column {
                 Row(Modifier.fillMaxWidth().padding(start=20.dp,end=12.dp,top=17.dp,bottom=13.dp),verticalAlignment=Alignment.CenterVertically){
                     Box(Modifier.size(42.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.secondaryContainer),contentAlignment=Alignment.Center){Icon(MaterialSymbol("users-round"),null,tint=MaterialTheme.colorScheme.primary)}
-                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
+                    Spacer(Modifier.width(12.dp));Column(Modifier.weight(1f)){Text(slot.label,fontSize=19.sp,fontWeight=FontWeight.Bold,maxLines=1,overflow=TextOverflow.Ellipsis);Text("${meetingTitle(meeting)} · ${friendlyDate(meeting.date)} · ${deptLabel(slot.department)}",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp),maxLines=1,overflow=TextOverflow.Ellipsis)}
                     IconButton(onClick=onDismiss){Icon(MaterialSymbol("close"),"Close",tint=MaterialTheme.colorScheme.onSurfaceVariant)}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 OutlinedTextField(query,{query=it},placeholder={Text("Find a person")},leadingIcon={Icon(MaterialSymbol("search"),null,tint=MaterialTheme.colorScheme.onSurfaceVariant)},singleLine=true,modifier=Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=12.dp),shape=RoundedCornerShape(13.dp))
-                Text("ELIGIBLE PEOPLE · ${filtered.size}",Modifier.padding(start=20.dp,bottom=8.dp),fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("ELIGIBLE PEOPLE · ${filtered.size}",Modifier.padding(start=20.dp,bottom=8.dp),fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                 PickerChoiceRow(title="Unassigned",subtitle="Leave this position empty",selected=slot.personId==null,icon="user-round",onClick={onSelect(null)})
                 if(filtered.isEmpty()) Box(Modifier.weight(1f).fillMaxWidth(),contentAlignment=Alignment.Center){Text(if(query.isBlank())"No eligible people for this assignment." else "No people match your search.",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}
                 else LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(horizontal=16.dp),verticalArrangement=Arrangement.spacedBy(7.dp),contentPadding=PaddingValues(bottom=10.dp)){
                     items(filtered,key={it.id}){person->PickerChoiceRow(person.name,"Group ${person.group} · ${person.status.replaceFirstChar(Char::uppercase)}",slot.personId==person.id,person=person,onClick={onSelect(person)})}
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("${candidates.size} eligible",fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);TextButton(onClick=onDismiss){Text("Cancel")}}
+                Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=10.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("${candidates.size} eligible",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant);TextButton(onClick=onDismiss){Text("Cancel")}}
             }
         }
     }
@@ -3047,7 +2957,7 @@ private fun PickerChoiceRow(title:String,subtitle:String,selected:Boolean,icon:S
     Surface(onClick=onClick,shape=RoundedCornerShape(14.dp),color=if(selected)MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceVariant,border=androidx.compose.foundation.BorderStroke(1.dp,if(selected)MaterialTheme.colorScheme.primary.copy(alpha=.45f)else MaterialTheme.colorScheme.outlineVariant),modifier=Modifier.fillMaxWidth().padding(horizontal=16.dp,vertical=3.dp)){
         Row(Modifier.padding(horizontal=12.dp,vertical=9.dp),verticalAlignment=Alignment.CenterVertically){
             if(person!=null) Avatar(person.name,38.dp) else Box(Modifier.size(38.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surface),contentAlignment=Alignment.Center){Icon(MaterialSymbol(icon?:"user-round"),null,tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp))}
-            Spacer(Modifier.width(11.dp));Column(Modifier.weight(1f)){Text(title,fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurface,maxLines=1,overflow=TextOverflow.Ellipsis);Text(subtitle,fontSize=11.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))}
+            Spacer(Modifier.width(11.dp));Column(Modifier.weight(1f)){Text(title,fontSize=13.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colorScheme.onSurface,maxLines=1,overflow=TextOverflow.Ellipsis);Text(subtitle,fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))}
             if(selected) Icon(MaterialSymbol("check"),"Selected",tint=MaterialTheme.colorScheme.primary,modifier=Modifier.size(18.dp)) else Icon(MaterialSymbol("chevron-right"),null,tint=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(18.dp))
         }
     }
@@ -3073,7 +2983,7 @@ private fun AccountPageAccessDialog(account: ManagedUser,onDismiss:()->Unit,onSa
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope=rememberCoroutineScope()
-    Dialog(onDismissRequest={if(!saving)onDismiss()}) {
+    SchedulerDialog(onDismissRequest={if(!saving)onDismiss()}) {
         Card(Modifier.fillMaxWidth().heightIn(max=(LocalConfiguration.current.screenHeightDp*.85f).dp),shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
             Column(Modifier.verticalScroll(rememberScrollState()).padding(22.dp),verticalArrangement=Arrangement.spacedBy(10.dp)) {
                 Icon(MaterialSymbol("tune"),null,tint=MaterialTheme.colorScheme.primary)
@@ -3104,7 +3014,7 @@ private fun AccountPasswordResetDialog(account: ManagedUser,onDismiss:()->Unit,o
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope=rememberCoroutineScope()
-    Dialog(onDismissRequest={if(!saving)onDismiss()}) {
+    SchedulerDialog(onDismissRequest={if(!saving)onDismiss()}) {
         Card(shape=RoundedCornerShape(28.dp),colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.surface)) {
             Column(Modifier.fillMaxWidth().imePadding().verticalScroll(rememberScrollState()).padding(22.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
                 Text("Reset password",fontSize=20.sp,fontWeight=FontWeight.Bold)
@@ -3142,9 +3052,9 @@ private fun AccountCreateDialog(onDismiss: () -> Unit, onCreate: suspend (String
     val departmentOptions = listOf("mic" to "Mic Men", "av" to "Audio / Video", "attendant" to "Platform")
     val actionOptions = listOf("view" to "View", "edit" to "Edit", "preview" to "Preview", "apply" to "Apply", "export" to "Export")
 
-    Dialog(onDismissRequest={if(!saving)onDismiss()},properties=DialogProperties(usePlatformDefaultWidth=false)) {
+    SchedulerDialog(onDismissRequest={if(!saving)onDismiss()},properties=DialogProperties(usePlatformDefaultWidth=false)) {
         Surface(
-            Modifier.fillMaxWidth(.94f).widthIn(max=460.dp).fillMaxHeight(.90f).heightIn(max=760.dp),
+            Modifier.fillMaxWidth().heightIn(max=760.dp),
             shape=RoundedCornerShape(26.dp), color=MaterialTheme.colorScheme.surface,
             border=androidx.compose.foundation.BorderStroke(1.dp,MaterialTheme.colorScheme.outlineVariant), tonalElevation=8.dp
         ) {
@@ -3157,19 +3067,19 @@ private fun AccountCreateDialog(onDismiss: () -> Unit, onCreate: suspend (String
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=15.dp),verticalArrangement=Arrangement.spacedBy(9.dp)) {
-                    Text("ACCOUNT DETAILS",fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("ACCOUNT DETAILS",fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(displayName,{displayName=it;error=null},label={Text("Display name")},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(13.dp))
                     OutlinedTextField(username,{username=it;error=null},label={Text("Username")},supportingText={Text("3–40 letters, numbers, dot, underscore, or hyphen")},singleLine=true,modifier=Modifier.fillMaxWidth(),shape=RoundedCornerShape(13.dp))
-                    Text("ACCOUNT TYPE",fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
+                    Text("ACCOUNT TYPE",fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
                     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(4.dp),horizontalArrangement=Arrangement.spacedBy(4.dp)) {
                         AccountRoleOption("Department editor",role=="assistant",Modifier.weight(1f)){role="assistant";actions=setOf("view","edit","preview","apply","export")}
                         AccountRoleOption("Viewer",role=="viewer",Modifier.weight(1f)){role="viewer";actions=setOf("view","export")}
                     }
-                    Text("DEPARTMENTS",fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
+                    Text("DEPARTMENTS",fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
                     Column(Modifier.clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal=10.dp,vertical=4.dp)) {
                         departmentOptions.forEach { (key,label) -> Row(Modifier.fillMaxWidth().heightIn(min=40.dp).clickable { departments=if(key in departments)departments-key else departments+key },verticalAlignment=Alignment.CenterVertically) { Checkbox(key in departments,{checked->departments=if(checked)departments+key else departments-key}); Text(label,Modifier.weight(1f),fontSize=13.sp) } }
                     }
-                    Text("ALLOWED ACTIONS",fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
+                    Text("ALLOWED ACTIONS",fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
                     Column(Modifier.clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant).padding(horizontal=10.dp,vertical=4.dp)) {
                         actionOptions.forEach { (key,label) ->
                             val enabled=role=="assistant"||key in listOf("view","export")
@@ -3179,13 +3089,13 @@ private fun AccountCreateDialog(onDismiss: () -> Unit, onCreate: suspend (String
                             }
                         }
                     }
-                    Text("SIGN-IN PASSWORD",fontSize=10.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
+                    Text("SIGN-IN PASSWORD",fontSize=12.sp,fontWeight=FontWeight.Bold,letterSpacing=1.sp,color=MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.padding(top=2.dp))
                     PasswordField(password,{password=it;error=null},"Password",modifier=Modifier.fillMaxWidth(),supportingText="At least 10 characters")
                     PasswordField(confirm,{confirm=it;error=null},"Confirm password",modifier=Modifier.fillMaxWidth())
                     error?.let { Text(it,color=MaterialTheme.colorScheme.error,fontSize=12.sp) }
                 }
                 HorizontalDivider(color=MaterialTheme.colorScheme.outlineVariant)
-                Row(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=11.dp),horizontalArrangement=Arrangement.End,verticalAlignment=Alignment.CenterVertically) {
+                FlowRow(Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=11.dp),horizontalArrangement=Arrangement.End,verticalArrangement=Arrangement.spacedBy(4.dp)) {
                     TextButton(enabled=!saving,onClick=onDismiss){Text("Cancel")}
                     Spacer(Modifier.width(8.dp))
                     Button(enabled=!saving,onClick={
@@ -3252,7 +3162,7 @@ private fun PreferenceRow(icon: String, title: String, subtitle: String, trailin
         Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
             Text(title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp), maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Spacer(Modifier.width(8.dp))
         trailing()
@@ -3305,7 +3215,7 @@ private fun SyncStatusRow(store: AppStore) {
     Row(Modifier.padding(top = 9.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         if (store.loading.value && !store.localMode) CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 2.dp, color = tint)
         else Icon(MaterialSymbol(icon), null, Modifier.size(15.dp), tint = tint)
-        Text(subtitle, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -3315,8 +3225,8 @@ private fun OfflineStatusBanner(lastSyncedAt: String?) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
             Icon(MaterialSymbol("cloud-off"), null, Modifier.size(18.dp))
             Column {
-                Text("Offline · changes cannot sync right now", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
-                Text(if (lastSyncedAt == null) "Connect to load the latest workspace." else "Last successful sync: ${syncTimeLabel(lastSyncedAt) ?: "unknown"}", fontSize = 10.sp)
+                Text("Offline · changes cannot sync right now", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text(if (lastSyncedAt == null) "Connect to load the latest workspace." else "Last successful sync: ${syncTimeLabel(lastSyncedAt) ?: "unknown"}", fontSize = 12.sp)
             }
         }
     }
