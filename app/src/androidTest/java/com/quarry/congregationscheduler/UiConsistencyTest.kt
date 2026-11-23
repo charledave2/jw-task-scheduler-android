@@ -137,7 +137,7 @@ class UiConsistencyTest {
                         val layout = layouts.single()
                         assertEquals("Navigation label wraps at 2x text: $label", 1, layout.lineCount)
                         assertFalse("Navigation label is ellipsized at 2x text: $label", layout.isLineEllipsized(0))
-                        assertTrue("Navigation label extends past its bounds: $label", layout.getLineRight(0) <= layout.size.width + 1f)
+                        assertTrue("Navigation label extends past its paragraph: $label", layout.getLineRight(0) <= layout.multiParagraph.width + 1f)
                     }
                 }
             }
