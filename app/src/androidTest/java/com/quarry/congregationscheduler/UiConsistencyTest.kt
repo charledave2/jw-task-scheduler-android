@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+
 package com.quarry.congregationscheduler
 
 import android.content.pm.ActivityInfo
@@ -6,6 +8,7 @@ import android.graphics.Bitmap
 import android.os.Environment
 import android.provider.MediaStore
 import androidx.test.filters.SdkSuppress
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.*
@@ -26,7 +29,8 @@ class UiConsistencyTest {
         // Wait for accessibility and the platform window to settle before capturing its framebuffer.
         device.waitForIdle()
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
-        val image = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot() ?: error("Could not capture UI screenshot")
+        // PixelCopy through Compose captures the rendered root, including a separate dialog window.
+        val image = compose.onAllNodes(isRoot()).onLast().captureToImage().asAndroidBitmap()
         val resolver = compose.activity.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "$name.png")
