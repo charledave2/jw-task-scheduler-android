@@ -2302,7 +2302,7 @@ private fun ExportPickerField(modifier: Modifier = Modifier, label: String, valu
         color = MaterialTheme.colorScheme.surface,
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
     ) {
-        Row(Modifier.fillMaxSize().padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 54.dp).padding(horizontal = 11.dp), verticalAlignment = Alignment.CenterVertically) {
             if (icon != null) {
                 Icon(MaterialSymbol(icon), null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(17.dp))
                 Spacer(Modifier.width(8.dp))
