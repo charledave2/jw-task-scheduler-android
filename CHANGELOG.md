@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.76
+- Fix Manage Schedule month and week selectors expanding to fill the screen; keep them compact and tappable.
+
 ## 1.0.75
 - Keep encrypted sign-in across app restarts and temporary network errors; cache the signed-in profile securely.
 - Serialize token rotation across background work and foreground requests; save rotated credentials durably.
