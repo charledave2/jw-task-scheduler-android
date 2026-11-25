@@ -46,7 +46,11 @@ internal fun AppSecurityShell(lock: AppLockController) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     val preferences = LocalContext.current.getSharedPreferences("scheduler_preferences", android.content.Context.MODE_PRIVATE)
-    val dark = preferences.getBoolean("dark_appearance", false)
+    val savedThemeMode = preferences.getString("theme_mode", null)
+    val themeMode = savedThemeMode ?: if (preferences.getBoolean("dark_appearance", false)) "dark" else "light"
+    val palette = preferences.getString("color_palette", "forest") ?: "forest"
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = themeMode == "dark" || (themeMode == "system" && systemDark)
     Box(Modifier.fillMaxSize()) {
         // Retain photo pickers, navigation and local editing state behind the opaque lock window.
         // On a locked cold launch no app data is initialized until authentication succeeds.
@@ -55,7 +59,7 @@ internal fun AppSecurityShell(lock: AppLockController) {
                 SchedulerApp(lock)
             }
         }
-        if(lock.locked) SchedulerTheme(dark=dark) {
+        if(lock.locked) SchedulerTheme(dark=dark, palette=palette) {
             Dialog(onDismissRequest=lock::closeApp,properties=DialogProperties(usePlatformDefaultWidth=false,dismissOnClickOutside=false,securePolicy=SecureFlagPolicy.SecureOn,decorFitsSystemWindows=false)) {
                 Surface(Modifier.fillMaxSize(),color=MaterialTheme.colorScheme.background) {
                     Column(Modifier.fillMaxSize().safeDrawingPadding().verticalScroll(rememberScrollState()).padding(28.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.Center) {

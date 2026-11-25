@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.77
+- Add selectable Forest, Ocean, Teal, and Amber accent palettes.
+- Add System, Light, and Dark appearance choices; keep theme and palette selections after restart.
+
 ## 1.0.76
 - Fix Manage Schedule month and week selectors expanding to fill the screen; keep them compact and tappable.
 
