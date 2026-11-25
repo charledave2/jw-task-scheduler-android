@@ -141,7 +141,11 @@ class AppStore(context: android.content.Context) {
     val page = mutableStateOf("Home")
     val month = mutableStateOf(YearMonth.now())
     val dataMonth = mutableStateOf<YearMonth?>(null)
-    val dark = mutableStateOf(preferences.getBoolean("dark_appearance", false))
+    val themeMode = mutableStateOf(
+        preferences.getString("theme_mode", null)
+            ?: if (preferences.getBoolean("dark_appearance", false)) "dark" else "light"
+    )
+    val colorPalette = mutableStateOf(preferences.getString("color_palette", "forest") ?: "forest")
     val fontScale = mutableFloatStateOf(preferences.getFloat("font_scale", 1f))
     val avatar = mutableStateOf<ImageBitmap?>(null)
     val accountPhotos = mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
@@ -440,9 +444,15 @@ class AppStore(context: android.content.Context) {
         throw IllegalArgumentException("Could not prepare that photo.")
     }
     fun setFontScale(value: Float) { val next = value.coerceIn(.85f, 1.30f); fontScale.value = next; preferences.edit().putFloat("font_scale", next).apply() }
-    fun setDarkAppearance(enabled: Boolean) {
-        dark.value = enabled
-        preferences.edit().putBoolean("dark_appearance", enabled).apply()
+    fun setThemeMode(mode: String) {
+        val value = mode.takeIf { it in setOf("system", "light", "dark") } ?: "system"
+        themeMode.value = value
+        preferences.edit().putString("theme_mode", value).apply()
+    }
+    fun setColorPalette(palette: String) {
+        val value = SchedulerPaletteOptions.firstOrNull { it.id == palette }?.id ?: "forest"
+        colorPalette.value = value
+        preferences.edit().putString("color_palette", value).apply()
     }
     suspend fun signOut() { scheduleLoads.invalidate(); ScheduleWidgets.clear(appContext); if (localMode) { user.value = null; data.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } else { api.logout(); user.value = null; data.value = null; users.value = emptyList(); accountPhotos.value = emptyMap(); avatar.value = null; mode.value = null; preferences.edit().remove("workspace_mode").apply() } }
 }
@@ -577,15 +587,21 @@ fun SchedulerApp(appLock: AppLockController) {
     }
     LaunchedEffect(error) { error?.let { snackbar.showSnackbar(it) } }
 
-    SchedulerTheme(dark = store.dark.value) {
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = when (store.themeMode.value) {
+        "dark" -> true
+        "light" -> false
+        else -> systemDark
+    }
+    SchedulerTheme(dark = dark, palette = store.colorPalette.value) {
       val baseDensity = LocalDensity.current
       CompositionLocalProvider(LocalDensity provides Density(baseDensity.density, baseDensity.fontScale * store.fontScale.value)) {
         SideEffect {
             (context as? android.app.Activity)?.window?.let { window ->
-                val bar = if (store.dark.value) android.graphics.Color.rgb(21, 23, 19) else android.graphics.Color.rgb(246, 246, 243)
+                val bar = if (dark) android.graphics.Color.rgb(21, 23, 19) else android.graphics.Color.rgb(246, 246, 243)
                 window.statusBarColor = bar
                 window.navigationBarColor = bar
-                window.decorView.systemUiVisibility = if (store.dark.value) 0 else android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                window.decorView.systemUiVisibility = if (dark) 0 else android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             }
         }
         if (showSplash) {
@@ -2650,10 +2666,38 @@ private fun SettingsScreen(store: AppStore, scope: kotlinx.coroutines.CoroutineS
                 Icon(MaterialSymbol("settings"),null,Modifier.size(17.dp));Spacer(Modifier.width(6.dp));Text("Phone security settings",fontSize=12.sp)
             }
             HorizontalDivider(Modifier.padding(vertical=4.dp),color=MaterialTheme.colorScheme.outlineVariant.copy(alpha=.65f))
-            PreferenceRow(icon = if (store.dark.value) "moon" else "sun", title = "Dark appearance", subtitle = if (store.dark.value) "On · Easier viewing in low light" else "Off · Using light colors") {
-                Switch(checked = store.dark.value, onCheckedChange = { store.setDarkAppearance(it) }, colors = appSwitchColors())
+            Text("Theme", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 6.dp, bottom = 4.dp))
+            Text("Choose how the app follows your display preference.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("system" to "System", "light" to "Light", "dark" to "Dark").forEach { (mode, label) ->
+                    FilterChip(
+                        selected = store.themeMode.value == mode,
+                        onClick = { store.setThemeMode(mode) },
+                        modifier = Modifier.weight(1f),
+                        label = { Text(label, maxLines = 1, fontSize = 12.sp) }
+                    )
+                }
             }
-            HorizontalDivider(Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
+            HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
+            Text("Color palette", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+            Text("Choose the app’s accent colors.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+            androidx.compose.foundation.layout.FlowRow(
+                modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                SchedulerPaletteOptions.forEach { option ->
+                    FilterChip(
+                        selected = store.colorPalette.value == option.id,
+                        onClick = { store.setColorPalette(option.id) },
+                        label = { Text(option.label, maxLines = 1, fontSize = 12.sp) },
+                        leadingIcon = {
+                            Box(Modifier.size(13.dp).clip(CircleShape).background(option.swatch))
+                        }
+                    )
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 10.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = .65f))
             Text("App text size · ${(store.fontScale.value * 100).roundToInt()}%", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { store.setFontScale(store.fontScale.value - .05f) }, enabled = store.fontScale.value > .85f) { Text("A−", fontSize = 13.sp, color = MaterialTheme.colorScheme.primary) }
