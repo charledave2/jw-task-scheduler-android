@@ -601,7 +601,7 @@ fun SchedulerApp(appLock: AppLockController) {
                 val bar = if (dark) android.graphics.Color.rgb(21, 23, 19) else android.graphics.Color.rgb(246, 246, 243)
                 window.statusBarColor = bar
                 window.navigationBarColor = bar
-                window.decorView.systemUiVisibility = if (store.dark.value) 0 else android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                window.decorView.systemUiVisibility = if (dark) 0 else android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or android.view.View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
             }
         }
         if (showSplash) {
